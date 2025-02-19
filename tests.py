@@ -2,7 +2,6 @@ import unittest
 from datetime import datetime, date, time
 import time as timetime
 import os
-import yaml
 
 from dbtruck import Store, Pickle, ISODate, ISODateTime
 
@@ -10,18 +9,11 @@ import dbtruck
 
 import test_settings as settings
 
-SQLITE_T_SEP = False
-DBDIR = 'test_dbs'
-    
 def connect_string(testname):
-    with open('test_config.yaml', 'r') as file:
-        config = yaml.safe_load(file)
-    t_sep = config.get('sqlite_t_separator', SQLITE_T_SEP)
-    connect_s = config.get('connect_string', '')
+    t_sep = settings.SQLITE_T_SEPARATOR
+    connect_s = settings.CONNECT_STRING
     if connect_s.startswith('mysql://') or connect_s.startswith('postgresql://') or connect_s.startswith('postgres://'):
         return connect_s, t_sep
-    if not connect_s:
-        connect_s = DBDIR
     os.makedirs(connect_s, exist_ok=True)
     dbfile = connect_s+os.sep+testname+'.sqlite'
     if os.path.exists(dbfile): 
