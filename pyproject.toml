@@ -1,0 +1,12 @@
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[project]
+# See https://packaging.python.org/en/latest/specifications/pyproject-toml/#pyproject-toml-spec
+name = "dbtruck"
+version = "1.0.0"
+requires-python = ">= 3.10"
+description = "A relaxed schema-less interface to non-normalised tables in databases that use the DB API 2.0 PEP-0249 standard"
+readme = "README.md"
+license-files = [ "LICEN[CS]E*" ]

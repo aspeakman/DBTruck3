@@ -1,0 +1,3 @@
+#defines files to include in the source distribution built by the sdist command
+include *.txt README.md
+recursive-include dbtruck *.txt *.py *.csv
