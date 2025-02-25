@@ -39,7 +39,8 @@ class Store(object):
     _poss_db_types = [ 'SQLITE', 'POSTGRESQL', 'MYSQL' ] # just an aide memoire not used
   
     def __init__(self, connect_details, data_table = 'dbtruckdata', vars_table = 'dbtruckvars', default_commit = True, 
-            timeout = 5, json_str_output = False, dates_str_output = False, bool_int_output = False, sqlite_t_sep = False):
+            timeout = 5, json_str_output = False, dates_str_output = False, bool_int_output = False, sqlite_t_sep = False,
+            has_rowids = False):
                 
         # note that sqlite_t_sep just specifies the internal storage format for SQLite datetimes
         # the string output of dates is always ISO8601 format (T separator)
@@ -66,6 +67,8 @@ class Store(object):
         
         if not connect_details:
             raise RuntimeError("No database connection details supplied")
+            
+        self._has_rowids = has_rowids
         
         self._qchar = '"' # default quote character for identifiers
         self.db_type = Store.type_from_uri(connect_details).upper()
@@ -208,10 +211,11 @@ class Store(object):
                     
             pkeys =  ', '.join( [ self.iquote(k) for k in keys ] )
             coldefs = ', '.join( [ keycoldefs[k] for k in keys ] )
-            if self.db_type == 'POSTGRESQL': # need an explcit 'rowid' field
-                coldefs = coldefs + ', rowid bigserial unique'
-            elif self.db_type == 'MYSQL': # need an explcit 'rowid' field
-                coldefs = coldefs + ', rowid bigint auto_increment unique'
+            if self._has_rowids:
+                if self.db_type == 'POSTGRESQL': # need an explcit 'rowid' field
+                    coldefs = coldefs + ', rowid bigserial unique'
+                elif self.db_type == 'MYSQL': # need an explcit 'rowid' field
+                    coldefs = coldefs + ', rowid bigint auto_increment unique'
             sqlsubs = (if_not_exists, self.iquote(table_name), coldefs, pkeys)
             sql = 'CREATE TABLE %s %s (%s, PRIMARY KEY (%s));' # create table with keys only
             #print(sql % sqlsubs)
@@ -229,10 +233,13 @@ class Store(object):
             
             sqlsubs = (if_not_exists, self.iquote(table_name), self.iquote(k), self._obj_column_type(startdata[k]) ) 
             sql = 'CREATE TABLE %s %s (%s %s' # create table with one unkeyed column
-            if self.db_type == 'POSTGRESQL': # need an explcit 'rowid' field
-                sql = sql + ', rowid bigserial unique);'
-            elif self.db_type == 'MYSQL': # need an explcit 'rowid' field
-                sql = sql + ', rowid bigint auto_increment unique);'
+            if self._has_rowids:
+                if self.db_type == 'POSTGRESQL': # need an explcit 'rowid' field
+                    sql = sql + ', rowid bigserial unique);'
+                elif self.db_type == 'MYSQL': # need an explicit 'rowid' field
+                    sql = sql + ', rowid bigint auto_increment unique);'
+                else:
+                    sql = sql + ');'
             else:
                 sql = sql + ');'
         
@@ -343,7 +350,8 @@ class Store(object):
             rows = self._execute_rows(sql)
             for row in rows:
                 cols[text(row[1])] = text(row[2]).split()[0] # value is derived column type (before first space - see SQLite)
-            cols[u'rowid'] = u'sequence integer'
+            if self._has_rowids:
+                cols[u'rowid'] = u'sequence integer'
         return cols 
     
     def columns(self, table_name=None):
@@ -411,12 +419,13 @@ class Store(object):
     def _check_and_add_columns(self, table_name, data_row): 
         columns = self.column_info(table_name)
         # first check for explicit rowid column if required
-        if self.db_type == 'POSTGRESQL' and 'rowid' not in columns:
-                sql = 'ALTER TABLE %s ADD COLUMN rowid bigserial unique;'
-                self._execute_norows(sql % self.iquote(table_name)) 
-        elif self.db_type == 'MYSQL' and 'rowid' not in columns:
-                sql = 'ALTER TABLE %s ADD COLUMN rowid bigint auto_increment unique;'
-                self._execute_norows(sql % self.iquote(table_name)) 
+        if self._has_rowids:
+            if self.db_type == 'POSTGRESQL' and 'rowid' not in columns:
+                    sql = 'ALTER TABLE %s ADD COLUMN rowid bigserial unique;'
+                    self._execute_norows(sql % self.iquote(table_name)) 
+            elif self.db_type == 'MYSQL' and 'rowid' not in columns:
+                    sql = 'ALTER TABLE %s ADD COLUMN rowid bigint auto_increment unique;'
+                    self._execute_norows(sql % self.iquote(table_name)) 
         for key, value in data_row:
             if key not in columns and value is not None:
                 column_type = self._obj_column_type(value)
@@ -534,7 +543,7 @@ class Store(object):
         table_name = table_name if table_name else self._data_table
         target = None
         if not fields: # catches empty lists and dicts
-            target = '*, rowid' if self.db_type == 'SQLITE' else "*" # always include rowid in full list - implcit in Postgres
+            target = '*, rowid' if self.db_type == 'SQLITE' and self._has_rowids else "*" # always include rowid in full list - implicit in Postgres/mySQL
         elif isinstance(fields, str): # simple string
             target = fields
         elif isinstance(fields, tuple) and len(fields) == 2 and isinstance(fields[0], str): # pair
@@ -858,7 +867,10 @@ class Store(object):
         
         table_keys = self.key_columns(table_name) if self.db_type == 'POSTGRESQL' else [] 
         
-        rowids = [] # rowids of inserted rows
+        if self._has_rowids:
+            rowids = [] # rowids of inserted rows
+        else:
+            row_total = 0
         
         try:
             for row in this_data:
@@ -878,38 +890,50 @@ class Store(object):
                         self._execute_norows(sql, row_key_values)
                 
                     sqlsubs = (self.iquote(table_name), ', '.join(fields), pholders)
-                    sql = 'INSERT INTO %s (%s) VALUES (%s) RETURNING rowid;' % sqlsubs
-                    self._execute_norows(sql, values) 
-                    rowid = self.cursor.fetchone()[0] 
+                    if self._has_rowids:
+                        sql = 'INSERT INTO %s (%s) VALUES (%s) RETURNING rowid;' % sqlsubs
+                        self._execute_norows(sql, values) 
+                        rowid = self.cursor.fetchone()[0]
+                    else:
+                        sql = 'INSERT INTO %s (%s) VALUES (%s);' % sqlsubs
+                        count = self._execute_norows(sql, values)
+                        row_total = row_total if count is None else row_total + count
                 
                 else:
                 
                     sqlsubs = (insertcmd, self.iquote(table_name), ', '.join(fields), pholders)
                     sql = '%s INTO %s (%s) VALUES (%s);' % sqlsubs
-                    self._execute_norows(sql, values) 
-                    rowid = self.cursor.lastrowid
-                    #rowid = self.cursor.execute('SELECT last_insert_rowid();').fetchone()[0] # NB direct cursor execute
+                    count = self._execute_norows(sql, values) 
+                    if self._has_rowids:
+                        rowid = self.cursor.lastrowid
+                        #rowid = self.cursor.execute('SELECT last_insert_rowid();').fetchone()[0] # NB direct cursor execute
+                    else:
+                        row_total = row_total if count is None else row_total + count
                     
-                if rowid != 0:
+                if self._has_rowids and rowid != 0:
                     #print("data, rowid", fields, values, rowid)
                     rowids.append(rowid)
             
         except self._dbmodule.Error as e:
             #print(type(e).__name__, str(e).split(':')[0])
-            if not create:
-                etype = type(e).__name__
-                msg = str(e).split(':')[0]
-                if (self.db_type == 'POSTGRESQL' and etype in [ 'UndefinedTable', 'UndefinedColumn']) or \
-                   (self.db_type == 'MYSQL' and ("1146" in msg or "1054" in msg)) or \
-                   (self.db_type == 'SQLITE' and ('no such table' in msg or 'no column named' in msg or 'no such column' in msg)):
-                    self.commit() # note this ends transaction + saves any data to other table not yet committed, before create/alter table which would lose data
-                    return self.insert(data=data, table_name=table_name, replace=replace, create=True, **kwargs)
+            etype = type(e).__name__
+            msg = str(e).split(':')[0]
+            if (self.db_type == 'POSTGRESQL' and etype in [ 'UndefinedTable', 'UndefinedColumn']) or \
+               (self.db_type == 'MYSQL' and ("1146" in msg or "1054" in msg)) or \
+               (self.db_type == 'SQLITE' and ('no such table' in msg or 'no column named' in msg or 'no such column' in msg)):
+                #self.commit() # note this ends transaction + saves any data to other table not yet committed, before create/alter table which would lose data
+                self.rollback()
+                return self.insert(data=data, table_name=table_name, replace=replace, create=True, **kwargs) # start again
             raise
                 
-        if rowids:
-            self._commit_if_default(kwargs)
-            
-        return rowids
+        if self._has_rowids:
+            if rowids:
+                self._commit_if_default(kwargs)
+            return rowids
+        else:
+            if row_total > 0:
+                self._commit_if_default(kwargs)
+            return row_total
 
     def upsert(self, *args, **kwargs): # included for compatibility only - not a real upsert see above
         return self.insert(replace=True, *args, **kwargs)
@@ -924,13 +948,12 @@ class Store(object):
             return
         table_name = table_name if table_name else self._data_table
         sql = "DELETE FROM %s WHERE %s" % (self.iquote(table_name), conditions)
-        result = self._execute_norows(sql, params)          
+        count = self._execute_norows(sql, params)          
         self._commit_if_default(kwargs)
-        return result
+        return count
         
     def _clean_data(self, data, remove_none=True):
         # Turns it into a list of lists of (field, value) tuples (+optional step to remove items with None values).
-
         try:
             data.keys
         except AttributeError:
@@ -968,7 +991,6 @@ class Store(object):
 
             cleaned.append(newrow)
             
-        #print(cleaned)
         return cleaned
 
     #def create_function(self, name, num_params, func):

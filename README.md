@@ -40,13 +40,13 @@ The simplest `insert` call looks like this.
 This saves a new row with "Thomas" in the "name" column and
 "Levine" in the "surname" column. It uses the default table "dbtruckdata"
 inside the SQLite database "dbtruck.db" (created above). It creates or alters the table
-if it needs to and returns the rowid of the new row created (as a list of length 1).
+as needed.
 
-You can insert further rows with addtional fields by suppling multiple dictionaries and `Store.insert` 
-returns a list of the rowids of the new rows.
+You can insert further rows with additional fields by suppling multiple dictionaries.
+By default `Store.insert` returns the number of new rows inserted.
 
     st.insert([{"surname": "Smith"}, {"surname": "Jones", "title": "Mr"}]) 
-    ==> [2, 3]
+    ==> 2
 
 If there are UNIQUE constraints on the table (see below) then
 `insert` will fail if these constraints are violated. You can use `save` (with
@@ -55,15 +55,16 @@ the same syntax) to replace the existing row instead.
 ### Retrieve
 Once the database table contains some data, you can retrieve all data as follows:
 
-    odata = st.dump()
+    st.dump()
 
 The data come out as a list of ordered dictionaries, with one dictionary per row. Columns 
-(dictionary keys) have been created as required, and unknown values are set to `None`. Each
-row also has a unique 'rowid' value (starting from 1).
+(dictionary keys) have been created as required, and unknown values are set to `None`. 
 
-    dict(odata[1]) 
-    ==> { 'name': None, 'surname': 'Smith', 'title': None, 'rowid': 2}
-
+    [
+    OrderedDict({ 'name': 'Thomas', 'surname': 'Levine', 'title': None }),
+    OrderedDict({ 'name': None, 'surname': 'Smith', 'title': None }),
+    OrderedDict({ 'name': None, 'surname': 'Jones', 'title': 'Mr' })
+    ]
 
 Slow start
 -------
@@ -96,6 +97,8 @@ Store has default keyword arguments as follows:
     form; however if this is set to `True` they are returned as ISO 8601 strings (note Python format with 'T' separator for date times)
 * `bool_int_output` - by default boolean values are returned as `True` and `False` values; however if this is set 
     to `True` they are returned as the integer values `1` and `0`
+* `has_rowids` - if this is set to `True` a `rowid` column is created in the table and each row is allocated a unique numeric value when stored; default is `False`.
+   This is useful if you want to know the order in which data were inserted
     
 Note if you want to use PostgreSQL or MySQL as your underlying database (see `connect_details` above) run one of these commands first:
 
@@ -118,6 +121,11 @@ You can pass a list of dictionaries to insert multiple rows at once
         {"firstname": "Julian", "lastname": "Assange"}
     ]
     st.insert(data)
+    
+The normal return from `Store.insert` is the number of rows inserted, but if `has_rowids` is set to
+ `True` then the return value is a list of the rowids inserted.
+
+    eg: [ 1, 2 ]
 
 ### Complex objects
 You can even pass nested structures; dictionaries, tuples,
@@ -150,7 +158,7 @@ Column names and table names automatically get quoted if you pass them without q
 so you can use bizarre table and column names, like `no^[hs!'e]?'sf_"&'`
 
 ### Retrieving
-The `dump` command retrieves an entire table, but you can also use the `select` command 
+The `Store.dump` command retrieves an entire table, but you can also use the `select` command 
 if you want to retrieve parts of a data table based on some filtering conditions. You can also retrieve 
 a subset of columns by specifiying a `fields` list. Example:
 
@@ -173,7 +181,14 @@ Note you can also add further SQL restrictions to `conditions` eg LIMIT or ORDER
 
 The data returned from `Store.select` (and `Store.dump`) are a list of ordered dictionaries, one dictionary
 per row. Data output values are coerced to appropriate Python types depending
-on the settings.
+on the settings. If `has_rowids` is set to `True` then each row also has a unique 'rowid' value (starting from 1).
+
+    odata = st.dump()
+    [
+    OrderedDict({ 'name': 'Thomas', 'surname': 'Levine', 'title': None, 'rowid': 1 }),
+    OrderedDict({ 'name': None, 'surname': 'Smith', 'title': None, 'rowid': 2 }),
+    OrderedDict({ 'name': None, 'surname': 'Jones', 'title': 'Mr', 'rowid': 3 })
+    ]
 
 Varations on `select` are `match_select` (select matches from a list of values) and `list_select` (select matches form a dict of keys and values)
 
