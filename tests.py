@@ -10,15 +10,16 @@ import dbtruck
 import test_settings as settings
 
 def connect_string(testname):
+    use_rowids = settings.USE_ROWIDS
     t_sep = settings.SQLITE_T_SEPARATOR
     connect_s = settings.CONNECT_STRING
     if connect_s.startswith('mysql://') or connect_s.startswith('postgresql://') or connect_s.startswith('postgres://'):
-        return connect_s, t_sep
+        return connect_s, t_sep, use_rowids
     os.makedirs(connect_s, exist_ok=True)
     dbfile = connect_s+os.sep+testname+'.sqlite'
     if os.path.exists(dbfile): 
         os.remove(dbfile)
-    return dbfile, t_sep
+    return dbfile, t_sep, use_rowids
 
 class TestClass(object):
     avalue = 10
@@ -58,8 +59,8 @@ class DBTruckTests(unittest.TestCase):
             }
         
         
-        connect, t_sep = connect_string(self._testMethodName)
-        teststore = Store(connect, sqlite_t_sep=t_sep)
+        connect, t_sep, use_rowids = connect_string(self._testMethodName)
+        teststore = Store(connect, sqlite_t_sep=t_sep, has_rowids = use_rowids)
         dbtable = self._testMethodName + '_1'
         teststore.drop(dbtable, if_exists = True)
         teststore.create(table_name=dbtable, data=mydata )
@@ -135,7 +136,7 @@ class DBTruckTests(unittest.TestCase):
         
         teststore.close()
         
-        teststore = Store(connect, json_str_output = True, dates_str_output = True, bool_int_output = True, sqlite_t_sep=t_sep)
+        teststore = Store(connect, json_str_output = True, dates_str_output = True, bool_int_output = True, sqlite_t_sep=t_sep, has_rowids = use_rowids)
         dbtable = self._testMethodName + '_2'
         teststore.drop(dbtable, if_exists = True)
         teststore.create(table_name=dbtable, data=mydata)
@@ -180,8 +181,8 @@ class DBTruckTests(unittest.TestCase):
             ]
     
         dbtable = self._testMethodName
-        connect, t_sep = connect_string(dbtable)
-        teststore = Store(connect, sqlite_t_sep=t_sep)
+        connect, t_sep, use_rowids = connect_string(dbtable)
+        teststore = Store(connect, sqlite_t_sep=t_sep, has_rowids = use_rowids)
         teststore.drop(dbtable, if_exists = True)
         teststore.create(table_name=dbtable, data={ 'authority': 'dummy', 'uid': 'xxx', 'date_scraped': datetime.now(), 
                 'start_date': date.today(), 'decided_date': date.today(),
@@ -254,8 +255,8 @@ class DBTruckTests(unittest.TestCase):
             'binvar': binvar,
             }
             
-        connect, t_sep = connect_string(self._testMethodName)
-        teststore = Store(connect, json_str_output=True, dates_str_output=True, sqlite_t_sep=t_sep) # note the string output settings should be ignored for vars
+        connect, t_sep, use_rowids = connect_string(self._testMethodName)
+        teststore = Store(connect, json_str_output=True, dates_str_output=True, sqlite_t_sep=t_sep, has_rowids = use_rowids) # note the string output settings should be ignored for vars
         teststore.clear_vars()
         for k, v in mydata.items():
             teststore.set_var(k, v)
@@ -277,8 +278,8 @@ class DBTruckTests(unittest.TestCase):
         
     def test_save_data(self):    
     
-        connect, t_sep = connect_string(self._testMethodName)
-        teststore = Store(connect, sqlite_t_sep=t_sep)
+        connect, t_sep, use_rowids = connect_string(self._testMethodName)
+        teststore = Store(connect, sqlite_t_sep=t_sep, has_rowids = use_rowids)
         dbtable = self._testMethodName + '_1'
         teststore.drop(dbtable, if_exists = True)
         
@@ -289,9 +290,12 @@ class DBTruckTests(unittest.TestCase):
         teststore.save( data=seconddata, table_name=dbtable, commit=True)
         
         count = teststore.count(table_name=dbtable) 
-        icol = teststore.column_info(table_name=dbtable) # note always includes the rowid too
+        icol = teststore.column_info(table_name=dbtable) 
         self.assertEqual(count, 2, 'Failed to create unkeyed table from data')
-        self.assertEqual(len(icol), 4, 'Failed to add new columns from data') # includes rowid
+        if use_rowids:
+            self.assertEqual(len(icol), 4, 'Failed to add new columns from data') # includes rowid column
+        else:
+            self.assertEqual(len(icol), 3, 'Failed to add new columns from data') # no rowid column
         
         dbtable = self._testMethodName + '_2'
         teststore.drop(dbtable, if_exists = True)
@@ -302,8 +306,11 @@ class DBTruckTests(unittest.TestCase):
         count = teststore.count(table_name=dbtable) 
         icol = teststore.column_info(table_name=dbtable) 
         self.assertEqual(count, 0, 'Failed to create keyed table from data')
-        self.assertEqual(len(icol), 3, 'Failed to add key columns from data')
-        
+        if use_rowids:
+            self.assertEqual(len(icol), 3, 'Failed to add key columns from data') # includes rowid column
+        else:
+            self.assertEqual(len(icol), 2, 'Failed to add key columns from data') # no rowid column
+            
         keydata1 = {  'key1': '1', 'key2': '2', 'field1': 'xxx', 'field2': 'yyy' }
         keydata2 = {  'key1': '1', 'key2': '2', 'field1': 'aaa', 'field2': 'bbb' }
         keydata3 = {  'key1': '1', 'key2': '3', 'field1': 'xxx', 'field2': 'yyy' }
@@ -316,14 +323,20 @@ class DBTruckTests(unittest.TestCase):
         matched = {  'key1': '1', 'key2': '2' }
         retrieved = teststore.match_select(matched, table_name=dbtable)
         r = retrieved[0]
-        self.assertEqual(len(r), 5, 'Failed to replace record') # first record replaced + includes rowid
+        if use_rowids:
+            self.assertEqual(len(r), 5, 'Failed to replace record') # first record replaced + includes rowid
+        else:
+            self.assertEqual(len(r), 4, 'Failed to replace record') # first record replaced 
         self.assertEqual(r['field2'], 'bbb', 'Failed to update record') # new record overwritten
         
         keydata4 = {  'key1': '1', 'key2': '2', 'field3': 'xxx', 'field4': 'yyy' }
         teststore.save( data=keydata4, table_name=dbtable, commit=True) # exception - keys do not match
         retrieved = teststore.match_select(matched, table_name=dbtable)
         r = retrieved[0]
-        self.assertEqual(len(r), 7, 'Failed to add new fields to old record') # first record overwritten again + includes rowid
+        if use_rowids:
+            self.assertEqual(len(r), 7, 'Failed to add new fields to old record') # first record overwritten again + includes rowid
+        else:
+            self.assertEqual(len(r), 6, 'Failed to add new fields to old record') # first record overwritten again 
         self.assertIsNone(r['field2'], 'Failed to replace old fields with null') # first record overwritten
         
         dbtable = self._testMethodName + '_3'
@@ -336,7 +349,10 @@ class DBTruckTests(unittest.TestCase):
         teststore.save( data=firstdata, table_name=dbtable)
         
         cols = teststore.columns(table_name=dbtable)
-        self.assertEqual(len(cols), 5, 'Failed to create table from data with default commit') 
+        if use_rowids:
+            self.assertEqual(len(cols), 5, 'Failed to create table from data with default commit') # includes rowid
+        else:
+            self.assertEqual(len(cols), 4, 'Failed to create table from data with default commit') # no rowid
         self.assertIn(weird_col_name, cols, 'Failed to create quoted column with complex name') 
         self.assertIn(unicode_col_name, cols, 'Failed to create quoted column with unicode name') 
         
@@ -344,14 +360,27 @@ class DBTruckTests(unittest.TestCase):
         teststore.drop(dbtable, if_exists = True)
         
         r1 = teststore.save( {"name":"Thomas","surname":"Levine"} )
-        r2 = teststore.save( [{"surname": "Smith"}, {"surname": "Jones", "title": "Mr"}] )
-        self.assertEqual(r1, [ 1 ], 'Failed to return rowid from single insert') 
-        #if teststore._db_type == 'SQLITE':
-        #    self.assertEqual(r2, [ 2, 3 ], 'Failed to return rowids on multiple insert') 
-        #else:
-        self.assertEqual(r2, [ 3, 4 ], 'Failed to return rowids on multiple insert') # rowid increments after create col/table
-        odata = teststore.dump()
+        r2 = teststore.save( [{"surname": "Smith"}, {"surname": "Jones", "title": "Mr"}] ) 
+        if use_rowids:
+            self.assertEqual(r1, [ 1 ], 'Failed to return rowid from single insert') 
+            if teststore.db_type == 'SQLITE':
+                self.assertEqual(r2, [ 2, 3 ], 'Failed to return rowids on multiple insert') 
+            else:
+                self.assertEqual(r2, [ 3, 4 ], 'Failed to return rowids on multiple insert') # rowid increments after successful insert (surname=Smith) but then gets rolled back
+        else:
+            self.assertEqual(r1, 1, 'Failed to return count from single insert') 
+            self.assertEqual(r2, 2, 'Failed to return count on multiple insert') 
+        #odata = teststore.dump()
         #print(dict(odata[1]))
+        
+        dbtable = 'dbtruckdata'
+        teststore.drop(dbtable, if_exists = True)
+        
+        r3 = teststore.save( [ {"name":"Thomas"}, {"surname":"Levine"}, {"title": "Mr"} ] ) # make 3 columns in successive insertions
+        if use_rowids:
+            self.assertEqual(r3, [ 1, 2, 3 ], 'Failed to return rowids on successive inserts') # rowid increments after create col/table
+        else:
+            self.assertEqual(r3, 3, 'Failed to return count from successive inserts') 
         
         dbtable = self._testMethodName + '_4'
         teststore.drop(dbtable, if_exists = True)
@@ -361,16 +390,18 @@ class DBTruckTests(unittest.TestCase):
             {'field1': 'zz', 'field3': 'bb' }            ]
         
         inserted = teststore.save( data=data, table_name=dbtable, commit=True)
-        
-        deleted = teststore.delete(table_name=dbtable, conditions='1=1') 
-        self.assertEqual(len(inserted), 3, 'Failed to return rowids of inserted data')
+        if use_rowids:
+            self.assertEqual(len(inserted), 3, 'Failed to return rowids of inserted data')
+        else:
+            self.assertEqual(inserted, 3, 'Failed to return count of inserted data')
+        deleted = teststore.delete(table_name=dbtable, conditions='1=1')
         self.assertEqual(deleted, 3, 'Failed to return count of deleted data')
     
     def test_select_data(self):    
     
         # booleans
-        connect, t_sep = connect_string(self._testMethodName)
-        teststore = Store(connect, sqlite_t_sep=t_sep)
+        connect, t_sep, use_rowids = connect_string(self._testMethodName)
+        teststore = Store(connect, sqlite_t_sep=t_sep, has_rowids = use_rowids)
         dbtable = self._testMethodName + '_1'
         teststore.drop(dbtable, if_exists = True)
         
