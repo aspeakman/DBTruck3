@@ -209,7 +209,7 @@ class Store(object):
     def close(self):
         self.connection.close()
 
-    def create_table(self, data, table_name=None, keys = [], error_if_exists = False): 
+    def create_table(self, data, table_name=None, keys = [], error_if_exists=True): 
         'Create a table based on the data, but dont insert anything.'
         table_name = table_name if table_name else self._data_table
         
@@ -218,9 +218,9 @@ class Store(object):
             raise ValueError('No data sample values, or all the values were null.')
             
         if self.db_type == 'SQLSERVER':
-            if_not_exists = '' if error_if_exists else 'IF NOT EXISTS (SELECT * FROM information_schema.tables WHERE table_name = %s) CREATE TABLE' % self._phchar
+            if_not_exists = 'CREATE TABLE' if error_if_exists else 'IF NOT EXISTS (SELECT * FROM information_schema.tables WHERE table_name = %s) CREATE TABLE' % self._phchar
         else:
-            if_not_exists = '' if error_if_exists else 'CREATE TABLE IF NOT EXISTS'
+            if_not_exists = 'CREATE TABLE' if error_if_exists else 'CREATE TABLE IF NOT EXISTS'
                         
         if keys:
         
@@ -291,7 +291,7 @@ class Store(object):
     def create(self, *args, **kwargs):
         self.create_table(*args, **kwargs)
                 
-    def drop_table(self, table_name, if_exists = False): # table has to be named
+    def drop_table(self, table_name, if_exists=False): # table has to be named
         if self.db_type == 'SQLSERVER' and if_exists:
             sql = """IF EXISTS ( SELECT * FROM information_schema.tables WHERE table_name = %s )
                 DROP TABLE %s;""" % (self._phchar, self.iquote(table_name))
@@ -977,7 +977,7 @@ class Store(object):
                 insertcmd = 'REPLACE'
             
         if create or table_name not in self._tables: 
-            self.create_table(table_name=table_name, data=data) 
+            self.create_table(table_name=table_name, data=data, error_if_exists=False) 
             # creates table only if it does not exist, but includes _check_and_add_columns() which internally runs _clean_data()
             # very wasteful to do this routinely, which is why the 'create' flag is off by default and can be
             # triggered by an exception below        
@@ -1041,7 +1041,6 @@ class Store(object):
                     rowids.append(rowid)
             
         except self._dbmodule.Error as e:
-            #print(type(e).__name__, str(e).split(':')[0])
             etype = type(e).__name__
             msg = str(e).split(':')
             msg = msg[1] if self.db_type == 'SQLSERVER' else msg[0]
@@ -1126,7 +1125,7 @@ class Store(object):
     #    if self.db_type == 'SQLITE':
     #        self.connection.create_function(name, num_params, func)
             
-    def create_index(self, columns, table_name=None, if_not_exists = True, unique = False): # implicit commit
+    def create_index(self, columns, table_name=None, unique=False, error_if_exists=True): # implicit commit
         'Create a unique index on the column(s) passed returning the index name'
         if not isinstance(columns, (list, tuple)):
             columns = [ columns ]
@@ -1144,7 +1143,7 @@ class Store(object):
                     #print(sql % sqlsubs)
                     self._execute_norows(sql % sqlsubs)
                     self.commit(implicit = True)
-        if (self.db_type == 'MYSQL' or self.db_type == 'SQLSERVER') and if_not_exists:
+        if (self.db_type == 'MYSQL' or self.db_type == 'SQLSERVER') and error_if_exists:
             indices = self.indices(table_name)
             if index_name not in indices:
                 sql = '%s %s ON %s (%s);' % (index_cmd, self.iquote(index_name), self.iquote(table_name), ', '.join(map(self.iquote, columns)))
@@ -1153,7 +1152,7 @@ class Store(object):
             else:
                 return index_name
         else:
-            index_cmd = index_cmd + ' IF NOT EXISTS' if if_not_exists else index_cmd
+            index_cmd = index_cmd if error_if_exists else index_cmd + ' IF NOT EXISTS'
             sql = '%s %s ON %s (%s);' % (index_cmd, self.iquote(index_name), self.iquote(table_name), ', '.join(map(self.iquote, columns)))
             #print(sql)
             self._execute_norows(sql) 
@@ -1163,7 +1162,7 @@ class Store(object):
     def index(self, *args, **kwargs):
         return self.create_index(*args, **kwargs)
         
-    def drop_index(self, index_name, table_name=None, if_exists = False): # implicit commit
+    def drop_index(self, index_name, table_name=None, if_exists=False): # implicit commit
         'Create a unique index on the column(s) passed.'
         table_name = table_name if table_name else self._data_table
         index_cmd = 'DROP INDEX'

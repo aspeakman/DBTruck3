@@ -7,6 +7,6 @@ build-backend = "pdm.backend"
 name = "dbtruck"
 version = "1.2.0"
 requires-python = ">= 3.10"
-description = "A relaxed schema-less interface to a data table and stored metadata in databases that use the DB API 2.0 PEP-0249 standard"
+description = "A relaxed schema-less interface to data tables and stored metadata in databases that use the DB API 2.0 PEP-0249 standard"
 readme = "README.md"
 license-files = [ "LICEN[CS]E*" ]

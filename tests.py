@@ -14,7 +14,6 @@ def connect_string(testname):
     use_rowids = settings.USE_ROWIDS
     t_sep = settings.SQLITE_T_SEPARATOR
     connect_s = settings.CONNECT_STRING
-    #print('Connecting to:', connect_s)
     if connect_s.startswith('mysql://') or connect_s.startswith('postgresql://') \
             or connect_s.startswith('postgres://') or ';' in connect_s:
         return connect_s, t_sep, use_rowids
@@ -65,7 +64,7 @@ class DBTruckTests(unittest.TestCase):
         connect, t_sep, use_rowids = connect_string(self._testMethodName)
         teststore = Store(connect, sqlite_t_sep=t_sep, has_rowids = use_rowids)
         dbtable = self._testMethodName + '_1'
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         teststore.create(table_name=dbtable, data=mydata )
         applics = [ mydata ]  
         teststore.save( data=applics, table_name=dbtable, commit=True)
@@ -141,7 +140,7 @@ class DBTruckTests(unittest.TestCase):
         
         teststore = Store(connect, json_str_output = True, dates_str_output = True, bool_int_output = True, sqlite_t_sep=t_sep, has_rowids = use_rowids)
         dbtable = self._testMethodName + '_2'
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         teststore.create(table_name=dbtable, data=mydata)
         applics = [ mydata ]  
         teststore.save( data=applics, table_name=dbtable, commit=True)
@@ -185,7 +184,7 @@ class DBTruckTests(unittest.TestCase):
         dbtable = self._testMethodName
         connect, t_sep, use_rowids = connect_string(dbtable)
         teststore = Store(connect, sqlite_t_sep=t_sep, has_rowids = use_rowids)
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         teststore.create(table_name=dbtable, data={ 'authority': 'dummy', 'uid': 'xxx', 'date_scraped': datetime.now(), 
                 'start_date': date.today(), 'decided_date': date.today(),
                 } )
@@ -293,7 +292,7 @@ class DBTruckTests(unittest.TestCase):
         connect, t_sep, use_rowids = connect_string(self._testMethodName)
         teststore = Store(connect, sqlite_t_sep=t_sep, has_rowids = use_rowids)
         dbtable = self._testMethodName + '_1'
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         
         firstdata = {  'field1': 'xxx', 'field2': 'yyy' }
         seconddata = {  'field1': 'xxx', 'field3': 'zzz' }
@@ -310,7 +309,7 @@ class DBTruckTests(unittest.TestCase):
             self.assertEqual(len(icol), 3, 'Failed to add new columns from data') # no rowid column
         
         dbtable = self._testMethodName + '_2'
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         
         sampledata = { 'key1': '1', 'key2': '2' }
         
@@ -352,7 +351,7 @@ class DBTruckTests(unittest.TestCase):
         self.assertIsNone(r['field2'], 'Failed to replace old fields with null') # first record overwritten
         
         dbtable = self._testMethodName + '_3'
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         
         weird_col_name = """no^[hs!'`e]?''sf_"&'"""
         unicode_col_name = u'blingblangy\u00e9\u00f8C' # e acute + degree
@@ -369,7 +368,7 @@ class DBTruckTests(unittest.TestCase):
         self.assertIn(unicode_col_name, cols, 'Failed to create quoted column with unicode name') 
         
         dbtable = 'dbtruckdata'
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         
         r1 = teststore.save( {"name":"Thomas","surname":"Levine"} )
         r2 = teststore.save( [{"surname": "Smith"}, {"surname": "Jones", "title": "Mr"}] ) 
@@ -386,7 +385,7 @@ class DBTruckTests(unittest.TestCase):
         #print(dict(odata[1]))
         
         dbtable = 'dbtruckdata'
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         
         r3 = teststore.save( [ {"name":"Thomas"}, {"surname":"Levine"}, {"title": "Mr"} ] ) # make 3 columns in successive insertions
         if use_rowids:
@@ -395,7 +394,7 @@ class DBTruckTests(unittest.TestCase):
             self.assertEqual(r3, 3, 'Failed to return count from successive inserts') 
         
         dbtable = self._testMethodName + '_4'
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         
         data = [ {  'field1': 'xxx', 'field2': 'yyy' },
             { 'field1': 'xxx', 'field3': 'zzz' },
@@ -416,7 +415,7 @@ class DBTruckTests(unittest.TestCase):
         
         # booleans
         dbtable = self._testMethodName + '_1'
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         data = {  'atrue': True, 'afalse': True, 'anull': True  }
         teststore.create_table( data=data, table_name=dbtable)
         data = {  'atrue': True, 'afalse': False, 'anull': None  }
@@ -455,7 +454,7 @@ class DBTruckTests(unittest.TestCase):
         
         #list_select and dict_select
         dbtable = self._testMethodName + '_2'
-        teststore.drop(dbtable, if_exists = True)
+        teststore.drop(dbtable, if_exists=True)
         
         data = [ 
             { 'surname': 'Brunel', 'forename': 'Isambard' },
@@ -481,4 +480,7 @@ class DBTruckTests(unittest.TestCase):
         
 
 if __name__ == '__main__':
+    
+    print('Testing connection:', settings.CONNECT_STRING)
+    
     unittest.main()

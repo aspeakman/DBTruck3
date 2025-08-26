@@ -2,7 +2,7 @@ DBTruck3
 =========
 
 **DBTruck3** provides a Python base class called Store which is a relaxed schema-less interface 
-to a data table and stored metadata in an SQLite, PostgreSQL, MySQL or SQL Server database.
+to data tables and stored metadata in an SQLite, PostgreSQL, MySQL or SQL Server database.
 
 Currently the default database is SQLite, with the optional use of PostgreSQL (psycopg2), MySQL (mysql.connector)
 or SQL Server (mssql_python) instead
@@ -15,7 +15,7 @@ Features include:
 * On-the-fly addition of new columns to a table
 * Transparent I/O of most common base types and any other objects that can be pickled
 * Independent storage and retrieval of named variables (metadata)
-* Configurable I/O conversion of data types from underlying databases
+* Configurable I/O conversion of Python data types to/from underlying databases
 
 Quick start
 ----------
@@ -101,9 +101,9 @@ Store has default keyword arguments as follows:
     to `True` they are returned as the integer values `1` and `0`
 * `has_rowids` - if this is set to `True` a `rowid` column is created in the table and each row is allocated a unique numeric value when stored; default is `False`.
    This is useful if you want to know the order in which data were inserted
-* `text_key_width` - sets the fixed size of text fields (default 100) in MySQL and SQL Server databases used as keys or in indexes
+* `text_key_width` - sets the fixed size (default 100) of text fields used as keys or in indexes in MySQL and SQL Server databases 
     
-Note if you want to use PostgreSQL or MySQL as your underlying database (see `connect_details` above) run one of these commands first:
+Note if you want to use PostgreSQL, MySQL or SQL Server as your underlying database (see `connect_details` above) run one of these commands first:
 
     python -m pip install psycopg2
     python -m pip install mysql-connector-python
@@ -169,8 +169,9 @@ a subset of columns by specifiying a `fields` list. Example:
     data = st.select(fields = [ 'name', 'surname' ], table_name = 'engineers', conditions = 'surname = ?', params = [ 'Brunel' ] )
 
 Note the `conditions` parameter is passed directly to the WHERE clause of the underlying SQL so it is good practice to substitute any variables 
-using `?` place holders, as shown in the example, where the appropriate values are quoted and inserted from the `params` list. (Note the ? 
-place holder used here is converted to the appropriate place holder character if you are using PostgreSQL or MySQL).
+using `?` place holders, as shown in the example, where the appropriate values are quoted and inserted from the `params` list. (Note the '?' 
+place holder required by Store is converted to the appropriate place holder character ('%s') if you are using the `psycopg2` or `mysql-connector-python`
+modules).
 
 Alternatively you can leave out `params` and use `Store.iquote` (quotes an identifier) or `Store.nquote` (quotes a literal nullable value)
 to do appropriate variable substitution into `conditions` as a Python string.
@@ -230,8 +231,8 @@ For example, you can record which page the last run of a script managed to get u
 Each variable is stored in a special `vars_table` that you can specify when initializing the Store class.
 If you don't specify one, the table is named `dbtruckvars`.
 
-Note all standard Python objects including int, float, str, dict, bool, bytes, list, date, time and datetime can be stored. 
-Complex objects will also be stored in pickled form.
+Note: all standard Python objects including int, float, str, dict, bool, bytes, list, date, time and datetime can be stored. 
+(see 'Information about Python data types' below). Complex objects will also be stored in pickled form.
 
 The `Store.all_vars` method returns all metadata variables and their values as a dict, the `Store.clear_vars` methods deletes them all.
 
@@ -262,7 +263,7 @@ You can define the primary `keys` for a table when you create it (or you can cre
 
     st.drop_table(table_name="diesel-engineers")
     
-It is an error to try to drop a table if it does not exist. Add the `if_exists' parameter to avoid this.
+It is an error to try to drop a table if it does not exist. Add the `if_exists` parameter to avoid this.
 
     st.drop_table(table_name="diesel-engineers", if_exists=True)
 
@@ -313,12 +314,13 @@ To get a list of created indexes use the `Store.indices` method.
 which returns a list of the indices for a particular table.
 
     st.indices(table_name='tools')
+    ==> [ 'tools_tooltype_weight', 'tools_tooltype' ]
 
 To delete an index.
 
     st.drop_index('tools_tooltype_weight', table_name='tools')
 
-It is an error to try to drop an if it does not exist. Add the `if_exists' parameter to avoid this.
+It is an error to try to drop an index if it does not exist. Add the `if_exists` parameter to avoid this.
 
     st.drop_index('tools_tooltype_weight', table_name='tools', if_exists=True)
 
@@ -350,19 +352,27 @@ Miscellaneous useful functions
     st.vacuum() # compresses the database (note has no effect in SQL Server)
     st.close() # closes the connection to the database
 
-### Information about Python data types
-* strings - are always output as unicode ('str' type on Python 3)
-* dicts - are stored as JSON (which means the keys will always be converted to strings on output)
-* tuples - are stored as JSON lists (and converted back on output)
-* sets - are stored as JSON lists (and converted back on output)
-* integers - are output as the 'int' type on Python 3
-* dates - ISO8601 format dates/datetimes/times are detected on input and stored in the underlying database in appropriate date fields, if you specify
-       `dates_str_output` note that datetimes are output in Python ISO8601 format (with a 'T' separator not a space)
-* booleans - when setting up select conditions using a boolean field pay attention to the SQL syntax - 
+### Information about accepted Python data types
+* `bool` - when setting up select conditions using a boolean field pay attention to the SQL syntax - 
       in MySQL, PostgreSQL and SQlite it is best to test for an implicit true and implicit false
       ie `WHERE bool_field` and `WHERE NOT bool_field` will work across all three underlying databases (whereas `bool_field <> 0` or `bool_field = 'false'` will depend on the
-      underlying database sysntax).
+      underlying database syntax).
       In SQL Server, implicit true/false does not work, you should use `WHERE bool_field=0` (false) and `WHERE bool_field=1` (true) as your tests
+* `bytearray` - stored as bytes (and converted back on output)
+* `bytes`
+* `datetime.date` - date objects and ISO8601 format strings are detected on input and stored in an appropriate date field
+* `datetime.datetime` - datetime objects and ISO8601 format strings are detected on input and stored an appropriate datetime field, 
+       if you specify `dates_str_output` note that datetimes are output in Python ISO8601 format (with a 'T' separator not a space)
+* `datetime.time` - time objects and ISO8601 format strings are detected on input and stored in an appropriate time field, 
+       In SQL Server, note that any microseconds are stripped from the stored value
+* `dict` - stored as a JSON string (which means the keys will always be converted to strings when output)
+* `float`
+* `int`
+* `list` - stored as a JSON string (and converted back on output)
+* `set` - stored as a JSON list string (and converted back on output)
+* `str`
+* `tuple` - stored as a JSON list string (and converted back on output)
+
 
 ### SQL convenience functions
 The following Store methods return appropriately formatted and quoted SQL fragments 
