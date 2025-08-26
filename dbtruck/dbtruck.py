@@ -24,26 +24,26 @@ from .convert import nquote, simplify, iquote
 from . import adapcast
 from .adapcast import Pickle, ISODate, ISODateTime, ISODateTTime, postcast_text as text
 
-SHORT_TYPE = re.compile(r"^\<(?:type|class) '(?:\w+\.)*(\w+)'\>$") # gets object identifier truncated from type string
-
 class Store(object):
 
-    # A class to control a connection to an SQLite, MySQL or Postgres database - based on the old ScraperWiki dumptruck module
+    # A class to control a connection to an SQLite, MySQL, Postgres or SQL Server database - based on the old ScraperWiki dumptruck module
 
     """Top level method types as follows:
-    DDL (data definition) = create, drop, index - no rollback as commit is included (already implicit in mySQL/SQLite)
+    DDL (data definition) = create, drop, create index, drop index - no rollback as commit is included (already implicit in mySQL/SQLite)
     DML (data modification) = execute, save, delete, insert, save_var, clear_vars - changes committed on exit unless commit=False
-    INF (data selection) = select, dump, count, get_max, get_min, select_list, get_var, all_vars, column_info, tables, key_columns, column_comments - read only
+    INF (data selection) = select, dump, count, get_max, get_min, select_list, match_list, get_var, all_vars, column_info, tables, columns, key_columns, indices - read only
     """
 
-    _poss_db_types = [ 'SQLITE', 'POSTGRESQL', 'MYSQL' ] # just an aide memoire not used
+    _poss_db_types = [ 'SQLITE', 'POSTGRESQL', 'MYSQL', 'SQLSERVER' ] # just an aide memoire not used
   
     def __init__(self, connect_details, data_table = 'dbtruckdata', vars_table = 'dbtruckvars', default_commit = True, 
             timeout = 5, json_str_output = False, dates_str_output = False, bool_int_output = False, sqlite_t_sep = False,
-            has_rowids = False):
+            has_rowids = False, text_key_width = 100):
                 
         # note that sqlite_t_sep just specifies the internal storage format for SQLite datetimes
         # the string output of dates is always ISO8601 format (T separator)
+        
+        # note that text_key_width only sets the fixed size of text fields in MySQL and SQL Server databases used as keys or in indexes
                         
         _tables = [] # current sorted list of tables in the store
             
@@ -69,6 +69,7 @@ class Store(object):
             raise RuntimeError("No database connection details supplied")
             
         self._has_rowids = has_rowids
+        self._text_key_width = text_key_width
         
         self._qchar = '"' # default quote character for identifiers
         self.db_type = Store.type_from_uri(connect_details).upper()
@@ -106,6 +107,14 @@ class Store(object):
             if database: connect_kwargs['database'] = database
             self.connection = self._dbmodule.connect(**connect_kwargs)
             self.connection.autocommit = False  
+        elif self.db_type == 'SQLSERVER':
+            if not hasattr(adapcast, 'SQLSERVER_CREATE_SEQ'):
+                raise ImportError("The 'mssql_python' package is not installed")
+            self._create_sequence = adapcast.SQLSERVER_CREATE_SEQ
+            self._cast_map = dict(adapcast.SQLSERVER_CAST_MAP)
+            self._dbmodule = __import__('mssql_python')
+            self.connection = self._dbmodule.connect(connect_details)
+            self.connection.setautocommit(False)
         else:
             self.db_type = 'SQLITE'
             self._sqlite_t_sep = sqlite_t_sep
@@ -128,10 +137,18 @@ class Store(object):
             raise RuntimeError("Could not connect to database '%s'" % connect_details)
         if self.db_type == 'MYSQL':
             self.cursor = self.connection.cursor(buffered=True)
+        elif self.db_type == 'SQLSERVER':
+            if self.connection._closed:
+                raise mssql_python.exceptions.InterfaceError(
+                    driver_error="Cannot create cursor on closed connection",
+                    ddbc_error="Cannot create cursor on closed connection",
+                )
+            self.cursor = adapcast.DBTruckSQLServCursor(self.connection)
+            self.connection._cursors.add(self.cursor)  # Track the cursor
         else:
             self.cursor = self.connection.cursor()
         
-        self._phchar = '%s' if self._dbmodule.paramstyle == 'pyformat' else '?' # place holder marker in prepared ststements
+        self._phchar = '%s' if self._dbmodule.paramstyle == 'pyformat' else '?' # place holder marker in prepared statements
         
         self._json_str_output = json_str_output
         self._dates_str_output = dates_str_output
@@ -141,6 +158,15 @@ class Store(object):
             self.connection.converter._json_str_output = self._json_str_output
             self.connection.converter._dates_str_output = self._dates_str_output
             self.connection.converter._bool_int_output = self._bool_int_output
+        elif self.db_type == 'SQLSERVER':
+            if self._bool_int_output is False:
+                self._cast_map.pop('boolint', None)
+            if self._dates_str_output is False:
+                self._cast_map.pop('isoformat', None)
+            if self._json_str_output is True:
+                self._cast_map.pop('json', None)
+                self._cast_map.pop('jsontuple', None)
+                self._cast_map.pop('jsonset', None)
         else:
             if self.db_type == 'SQLITE': # first remove two default converters in SQLite
                 self._dbmodule.register_converter('date', adapcast.convert_clear)
@@ -166,6 +192,8 @@ class Store(object):
             db = 'PostgreSQL'
         elif db_uri.startswith('mysql://'):
             db = 'MySQL'
+        elif ';' in db_uri:
+            db = 'SQLServer'
         return db
         
     def commit(self, implicit = False):
@@ -189,8 +217,11 @@ class Store(object):
         if len(this_data) == 0 or len(this_data[0]) == 0:
             raise ValueError('No data sample values, or all the values were null.')
             
-        if_not_exists = '' if error_if_exists else 'IF NOT EXISTS'
-            
+        if self.db_type == 'SQLSERVER':
+            if_not_exists = '' if error_if_exists else 'IF NOT EXISTS (SELECT * FROM information_schema.tables WHERE table_name = %s) CREATE TABLE' % self._phchar
+        else:
+            if_not_exists = '' if error_if_exists else 'CREATE TABLE IF NOT EXISTS'
+                        
         if keys:
         
             startdata = OrderedDict(this_data[0]) # firsr row
@@ -202,8 +233,7 @@ class Store(object):
                         raise ValueError('A key in the first sample data row was empty.')
                     else:
                         col_type = self._obj_column_type(v)
-                        if self.db_type == 'MYSQL' and col_type == 'text':
-                            col_type = 'varchar(255)' # MySQL key has to have a fixed width
+                        col_type = self._index_col_type(col_type)
                         keycoldefs[k] = self.iquote(k) + ' ' + col_type
             for k in keys:
                 if k not in keycoldefs:
@@ -212,13 +242,14 @@ class Store(object):
             pkeys =  ', '.join( [ self.iquote(k) for k in keys ] )
             coldefs = ', '.join( [ keycoldefs[k] for k in keys ] )
             if self._has_rowids:
-                if self.db_type == 'POSTGRESQL': # need an explcit 'rowid' field
+                if self.db_type == 'POSTGRESQL': # need an explicit 'rowid' field
                     coldefs = coldefs + ', rowid bigserial unique'
-                elif self.db_type == 'MYSQL': # need an explcit 'rowid' field
+                elif self.db_type == 'MYSQL': # need an explicit 'rowid' field
                     coldefs = coldefs + ', rowid bigint auto_increment unique'
+                elif self.db_type == 'SQLSERVER': # need an explicit 'rowid' field
+                    coldefs = coldefs + ', rowid bigint identity(1,1)'
             sqlsubs = (if_not_exists, self.iquote(table_name), coldefs, pkeys)
-            sql = 'CREATE TABLE %s %s (%s, PRIMARY KEY (%s));' # create table with keys only
-            #print(sql % sqlsubs)
+            sql = '%s %s (%s, PRIMARY KEY (%s));' # create table with keys only
         
         else:
         
@@ -232,32 +263,42 @@ class Store(object):
                 raise ValueError('All the values in the first sample data row were null.')
             
             sqlsubs = (if_not_exists, self.iquote(table_name), self.iquote(k), self._obj_column_type(startdata[k]) ) 
-            sql = 'CREATE TABLE %s %s (%s %s' # create table with one unkeyed column
+            sql = '%s %s (%s %s' # create table with one unkeyed column
             if self._has_rowids:
                 if self.db_type == 'POSTGRESQL': # need an explcit 'rowid' field
                     sql = sql + ', rowid bigserial unique);'
                 elif self.db_type == 'MYSQL': # need an explicit 'rowid' field
                     sql = sql + ', rowid bigint auto_increment unique);'
+                elif self.db_type == 'SQLSERVER': # need an explicit 'rowid' field
+                    sql = sql + ', rowid bigint identity(1,1));'
                 else:
                     sql = sql + ');'
             else:
                 sql = sql + ');'
         
         #print (sql % sqlsubs)
-        self._execute_norows(sql % sqlsubs) 
+        if self.db_type == 'SQLSERVER':
+            self._execute_norows(sql % sqlsubs, [table_name])
+        else:
+            self._execute_norows(sql % sqlsubs) 
          
         for row in this_data:
             self._check_and_add_columns(table_name, row) # update with any other columns 
             
         self.commit(implicit = True)
         self.tables() # stores fresh _tables list
-            
+                    
     def create(self, *args, **kwargs):
         self.create_table(*args, **kwargs)
                 
     def drop_table(self, table_name, if_exists = False): # table has to be named
-        sql = 'DROP TABLE %s %s;' % ('IF EXISTS' if if_exists else '', self.iquote(table_name))
-        self._execute_norows(sql)
+        if self.db_type == 'SQLSERVER' and if_exists:
+            sql = """IF EXISTS ( SELECT * FROM information_schema.tables WHERE table_name = %s )
+                DROP TABLE %s;""" % (self._phchar, self.iquote(table_name))
+            self._execute_norows(sql, [table_name])
+        else:
+            sql = 'DROP TABLE%s %s;' % (' IF EXISTS' if if_exists else '', self.iquote(table_name))
+            self._execute_norows(sql)
         self.commit(implicit = True)
         self.tables() # stores fresh _tables list
         
@@ -275,7 +316,7 @@ class Store(object):
             col_type = dc_type + ' ' + storage_type if dc_type else storage_type
             return self.iquote(col_type, force=True) # in SQLite column types force quotes because they can contain spaces
         elif self.db_type == 'MYSQL' and storage_type in [ 'varchar', 'varbinary' ] :
-            return storage_type + '(255)' # in MySQL set a default max size for specified types
+            return storage_type + '(%d)' % self._text_key_width # in MySQL set a default max size for specified types
         elif self.db_type == 'MYSQL' and storage_type in [ 'time', 'datetime', 'timestamp' ] :
             return storage_type + '(6)' # in MySQL allow for microseconds in date times/timestamps
         else:
@@ -330,7 +371,7 @@ class Store(object):
         return None, None, None
             
     def column_info(self, table_name=None): 
-        ' dictionary of all columns keyed by name with the value as the column type '
+        ' dictionary of all columns keyed by name with the column type as the value'
         table_name = table_name if table_name else self._data_table
         cols = {}
         if self.db_type == 'POSTGRESQL':
@@ -339,12 +380,18 @@ class Store(object):
             rows = self._execute_rows(sql, [table_name]) 
             for row in rows:
                 cols[text(row[0])] = text(row[1])  
-        elif self.db_type == 'MYSQL':
-            sql = """SELECT column_name, data_type
+        elif self.db_type == 'MYSQL' or self.db_type == 'SQLSERVER':
+            sql = """SELECT column_name, data_type, character_maximum_length
                 FROM information_schema.columns WHERE table_name = %s;""" % self._phchar
             rows = self._execute_rows(sql, [table_name])  
             for row in rows:
-                cols[text(row[0])] = text(row[1])
+                if row[2] is None or row[2] >= 65535:
+                    size = ''
+                elif row[2] <= 0:
+                    size = '(max)'
+                else:
+                    size = '(%d)' % row[2]
+                cols[text(row[0])] = text(row[1]) + size
         else:
             sql = 'PRAGMA table_info(%s)' % self.iquote(table_name)
             rows = self._execute_rows(sql)
@@ -359,7 +406,7 @@ class Store(object):
         table_name = table_name if table_name else self._data_table
         return sorted(self.column_info(table_name).keys())
         
-    def column_comments(self, table_name=None):
+    def _column_comments(self, table_name=None):
         ' dictionary of column comments keyed by column name '
         table_name = table_name if table_name else self._data_table
         cols = {}
@@ -375,12 +422,23 @@ class Store(object):
             rows = self._execute_rows(sql, [table_name]) 
             for row in rows:
                 cols[text(row[0])] = text(row[1])
+        elif self.db_type == 'SQLSERVER':
+            sql = """SELECT c.name as column_name, cast(ep.value as nvarchar) as column_comment
+                FROM sys.tables AS t INNER JOIN sys.columns AS c ON t.object_id = c.object_id
+                LEFT JOIN sys.extended_properties AS ep ON ep.major_id = c.object_id 
+                AND ep.minor_id = c.column_id AND ep.name = 'MS_Description'
+                WHERE t.name = %s;""" % self._phchar
+            rows = self._execute_rows(sql, [table_name]) 
+            for row in rows:
+                cols[text(row[0])] = text(row[1])
         return cols 
         
     def tables(self):
         ' alphabetically ordered list of table names '
         if self.db_type == 'POSTGRESQL':
             sql = """SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY name;"""
+        elif self.db_type == 'SQLSERVER':
+            sql = """SELECT table_name AS name FROM information_schema.tables WHERE table_type = 'BASE TABLE' ORDER BY name;"""
         elif self.db_type == 'MYSQL':
             sql = """SELECT table_name AS name FROM information_schema.tables ORDER BY name;"""
         else:
@@ -411,13 +469,20 @@ class Store(object):
                 FROM information_schema.columns WHERE table_name = %s AND column_key = 'PRI';""" % self._phchar
             rows = self._execute_rows(sql, [table_name]) 
             return [ text(row[0]) for row in rows ]
+        elif self.db_type == 'SQLSERVER':
+            sql = """SELECT column_name
+                FROM information_schema.key_column_usage WHERE 
+                OBJECTPROPERTY(OBJECT_ID(CONSTRAINT_SCHEMA+'.'+CONSTRAINT_NAME), 'IsPrimaryKey') = 1
+                AND table_name = %s;""" % self._phchar
+            rows = self._execute_rows(sql, [table_name]) 
+            return [ text(row[0]) for row in rows ]
         else:
             sql = 'PRAGMA table_info(%s)' % self.iquote(table_name)
             rows = self._execute_rows(sql) 
             return [ text(row[1]) for row in rows if row[5] != 0 ]
             
     def _check_and_add_columns(self, table_name, data_row): 
-        columns = self.column_info(table_name)
+        columns = list(self.column_info(table_name).keys())
         # first check for explicit rowid column if required
         if self._has_rowids:
             if self.db_type == 'POSTGRESQL' and 'rowid' not in columns:
@@ -426,11 +491,17 @@ class Store(object):
             elif self.db_type == 'MYSQL' and 'rowid' not in columns:
                     sql = 'ALTER TABLE %s ADD COLUMN rowid bigint auto_increment unique;'
                     self._execute_norows(sql % self.iquote(table_name)) 
+            elif self.db_type == 'SQLSERVER' and 'rowid' not in columns:
+                    sql = 'ALTER TABLE %s ADD rowid bigint identity(1,1);'
+                    self._execute_norows(sql % self.iquote(table_name)) 
         for key, value in data_row:
             if key not in columns and value is not None:
                 column_type = self._obj_column_type(value)
                 sqlsubs = (self.iquote(table_name), self.iquote(key), column_type) 
-                sql = 'ALTER TABLE %s ADD COLUMN %s %s;' 
+                if self.db_type == 'SQLSERVER':
+                    sql = 'ALTER TABLE %s ADD %s %s;'
+                else:
+                    sql = 'ALTER TABLE %s ADD COLUMN %s %s;' 
                 self._execute_norows(sql % sqlsubs) 
             if self.db_type == 'POSTGRESQL': # use the Postgres comment field to remove/store any post extraction cast information
                 column_cast = self._obj_column_cast(value)
@@ -442,7 +513,17 @@ class Store(object):
                 if column_cast:
                     sqlsubs = (self.iquote(table_name), self.iquote(key), column_type, nquote(column_cast)) 
                     sql = 'ALTER TABLE %s MODIFY COLUMN %s %s COMMENT %s;'
-                    self._execute_norows(sql % sqlsubs)             
+                    self._execute_norows(sql % sqlsubs)
+            elif self.db_type == 'SQLSERVER': # use the extended property description field to remove/store any post extraction cast information
+                column_cast = self._obj_column_cast(value)
+                if column_cast:
+                    sqlsubs = (nquote(column_cast), nquote(table_name), nquote(key)) 
+                    sql = """EXEC sp_addextendedproperty 
+                        @name = 'MS_Description', @value = %s,
+                        @level0type = 'Schema', @level0name = 'dbo',
+                        @level1type = 'Table', @level1name = %s, 
+                        @level2type = 'Column', @level2name = %s;"""
+                    self._execute_norows(sql % sqlsubs)
                 
     def execute(self, sql, *args, **kwargs): 
         """ note executes a raw SQL statement - so must be quoted where necessary 
@@ -511,7 +592,7 @@ class Store(object):
             self.connection.autocommit = True
             self._execute_norows('VACUUM;')
             self.connection.autocommit = False
-        else:
+        elif self.db_type != 'SQLSERVER':
             self._execute_norows('VACUUM;') 
         
     def lock(self): # implicit commit
@@ -575,14 +656,16 @@ class Store(object):
             result = self.execute('SELECT %s FROM %s WHERE %s;' % (target, self.iquote(table_name), conditions), params, commit = False)
         else:
             result = self.execute('SELECT %s FROM %s;' % (target, self.iquote(table_name)), [], commit = False)
+        #print('execute', result)
         if result and self._cast_map: # post extraction output casting based on stored column comments
-            column_casttype_map = self.column_comments(table_name) # maps columns to cast type
+            column_casttype_map = self._column_comments(table_name) # maps columns to cast type
+            #print(column_casttype_map)
             if column_casttype_map:
                 rowfield_castfunc_map = {} # result field to function map
                 for rf in result[0].keys(): # iterate over result field names
                     col = rfield_column_map[rf] if rfield_column_map else rf # get real table column name
                     cast_type = column_casttype_map.get(col) # match to any cast type stored in the comments
-                    if cast_type and self._cast_map.get(cast_type): # oly add if there a matching function?
+                    if cast_type and self._cast_map.get(cast_type): # only add if there is a matching function?
                         rowfield_castfunc_map[rf] = self._cast_map[cast_type]
                 if rowfield_castfunc_map:
                     for row in result:
@@ -668,11 +751,18 @@ class Store(object):
             return
         # the vars table has one dc_type column for every possible data type
         if self.db_type == 'MYSQL':
-            sql = 'CREATE TABLE IF NOT EXISTS %s (var_name varchar(255) PRIMARY KEY, var_type varchar(255));' % self.iquote(self._vars_table)
+            sql = 'CREATE TABLE IF NOT EXISTS %s (var_name varchar(%d) PRIMARY KEY, var_type varchar(%d));' \
+                % (self.iquote(self._vars_table), self._text_key_width, self._text_key_width)
+            self._execute_norows(sql)
+        elif self.db_type == 'SQLSERVER':
+            sql = """IF NOT EXISTS (SELECT * FROM information_schema.tables WHERE table_name = %s)
+                CREATE TABLE %s (var_name varchar(%d) PRIMARY KEY, var_type varchar(%d));""" \
+                % (self._phchar, self.iquote(self._vars_table), self._text_key_width, self._text_key_width)
+            self._execute_norows(sql, [self._vars_table]) 
         else:
             sql = 'CREATE TABLE IF NOT EXISTS %s (var_name text PRIMARY KEY, var_type text);' % self.iquote(self._vars_table)
-        self._execute_norows(sql) 
-        columns = list(self.column_info(self._vars_table))
+            self._execute_norows(sql) 
+        columns = list(self.column_info(self._vars_table).keys())
         for type_match, storage_type, dc_type in self._create_sequence: # if sequence is changed need to run clear_vars()
             if type_match is None: # skip any null entries
                 continue
@@ -681,7 +771,10 @@ class Store(object):
                 continue
             column_type = self._real_ctype(storage_type, dc_type) # note real column_type already quoted if required
             sqlsubs = (self.iquote(self._vars_table), self.iquote(col_key, force=True), column_type) # force quote because col_key can overlap with SQL keywords
-            sql = 'ALTER TABLE %s ADD COLUMN %s %s;' % sqlsubs
+            if self.db_type == 'SQLSERVER':
+                sql = 'ALTER TABLE %s ADD %s %s;' % sqlsubs
+            else:
+                sql = 'ALTER TABLE %s ADD COLUMN %s %s;' % sqlsubs
             #print(sql)
             self._execute_norows(sql)
             columns.append(col_key)
@@ -693,6 +786,14 @@ class Store(object):
                     sqlsubs = (self.iquote(self._vars_table), self.iquote(col_key, force=True), column_type, nquote(dc_type)) # force quote because col_key can overlap with SQL keywords
                     sql = 'ALTER TABLE %s MODIFY COLUMN %s %s COMMENT %s' % sqlsubs
                     self._execute_norows(sql)
+                elif self.db_type == 'SQLSERVER': # use the extended property description field to store any post extraction cast
+                    sqlsubs = (nquote(dc_type), nquote(self._vars_table), nquote(col_key))
+                    sql = """EXEC sp_addextendedproperty 
+                        @name = 'MS_Description', @value = %s,
+                        @level0type = 'Schema', @level0name = 'dbo',
+                        @level1type = 'Table', @level1name = %s, 
+                        @level2type = 'Column', @level2name = %s;"""
+                    self._execute_norows(sql % sqlsubs)
         self.commit(implicit = True)
             
     def get_var(self, name, default=None): 
@@ -703,6 +804,10 @@ class Store(object):
             self.connection.converter._json_str_output = False
             self.connection.converter._dates_str_output = False
             self.connection.converter._bool_int_output = False
+        elif self.db_type == 'SQLSERVER':
+            self._cast_map = dict(adapcast.SQLSERVER_CAST_MAP)
+            self._cast_map.pop('boolint', None)
+            self._cast_map.pop('isoformat', None)
         else:
             #self._json_string_converters(False)
             #self._dates_string_converters(False) 
@@ -712,6 +817,16 @@ class Store(object):
             self.connection.converter._json_str_output = self._json_str_output
             self.connection.converter._dates_str_output = self._dates_str_output
             self.connection.converter._bool_int_output = self._bool_int_output
+        elif self.db_type == 'SQLSERVER':
+            self._cast_map = dict(adapcast.SQLSERVER_CAST_MAP)
+            if self._bool_int_output is False:
+                self._cast_map.pop('boolint', None)
+            if self._dates_str_output is False:
+                self._cast_map.pop('isoformat', None)
+            if self._json_str_output is True:
+                self._cast_map.pop('json', None)
+                self._cast_map.pop('jsontuple', None)
+                self._cast_map.pop('jsonset', None)
         else:
             #self._json_string_converters(self._json_str_output)
             #self._dates_string_converters(self._dates_str_output)
@@ -742,7 +857,8 @@ class Store(object):
             var_type = self._var_type(obj_type_label)
             advalue = self._obj_for_adapting(value)
             params = [name, var_type, advalue]
-            if self.db_type == 'POSTGRESQL':
+            #print('insert', params)
+            if self.db_type == 'POSTGRESQL' or self.db_type == 'SQLSERVER':
                 self._execute_norows('DELETE FROM %s WHERE var_name = %s;' % (qtable, self._phchar), [name]) 
                 insertcmd = 'INSERT'
             elif self.db_type == 'MYSQL':
@@ -751,7 +867,6 @@ class Store(object):
                 insertcmd = 'INSERT OR REPLACE'
             ph3 = '%s,%s,%s' % (self._phchar, self._phchar, self._phchar) # 3 place holders
             sql = '%s INTO %s (var_name, var_type, %s) VALUES (%s);' % (insertcmd, qtable, self.iquote(var_type, force=True), ph3) 
-            #print(type(value), sql, params)
             # force quote because short type names can overlap with SQL keywords (set)
         self._execute_norows(sql, params)          
         self._commit_if_default(kwargs)
@@ -773,8 +888,13 @@ class Store(object):
         'Recreate an empty vars table.'
         if not self._vars_table:
             return
-        sql = 'DROP TABLE IF EXISTS %s;' % self.iquote(self._vars_table)
-        self._execute_norows(sql)
+        if self.db_type == 'SQLSERVER':
+            sql = """IF EXISTS ( SELECT * FROM information_schema.tables WHERE table_name = %s )
+                DROP TABLE %s;""" % (self._phchar, self.iquote(self._vars_table))
+            self._execute_norows(sql, [self._vars_table]) 
+        else:
+            sql = 'DROP TABLE IF EXISTS %s;' % self.iquote(self._vars_table)
+            self._execute_norows(sql)
         self._check_or_create_vars_table() # includes an implicit commit
         
     def _register_adapter(self, python_type, adapt_callable):
@@ -865,7 +985,7 @@ class Store(object):
         this_data = self._clean_data(data) # Turns it into a list of lists of (key, value) tuples
         # None values ARE removed because the default for any missing field will be NULL = full row replace
         
-        table_keys = self.key_columns(table_name) if self.db_type == 'POSTGRESQL' else [] 
+        table_keys = self.key_columns(table_name) if self.db_type == 'POSTGRESQL' or self.db_type == 'SQLSERVER' else [] 
         
         if self._has_rowids:
             rowids = [] # rowids of inserted rows
@@ -879,7 +999,7 @@ class Store(object):
                 values = [ self._obj_for_adapting(pair[1]) for pair in row ] # wrap in Adapter class here if necessary
                 pholders = ','.join([self._phchar for f in fields]) # place holders
 
-                if self.db_type == 'POSTGRESQL':
+                if self.db_type == 'POSTGRESQL' or self.db_type == 'SQLSERVER':
                 
                     if replace and table_keys: # delete any pre-existing row with the same keys
                         row_keys = [ f[0] for f in row if f[0] in table_keys ]
@@ -891,9 +1011,15 @@ class Store(object):
                 
                     sqlsubs = (self.iquote(table_name), ', '.join(fields), pholders)
                     if self._has_rowids:
-                        sql = 'INSERT INTO %s (%s) VALUES (%s) RETURNING rowid;' % sqlsubs
-                        self._execute_norows(sql, values) 
-                        rowid = self.cursor.fetchone()[0]
+                        if self.db_type == 'POSTGRESQL':
+                            sql = 'INSERT INTO %s (%s) VALUES (%s) RETURNING rowid;' % sqlsubs
+                            self._execute_norows(sql, values) 
+                            rowid = self.cursor.fetchone()[0]
+                        elif self.db_type == 'SQLSERVER':
+                            sql = 'INSERT INTO %s (%s) VALUES (%s);' % sqlsubs
+                            self._execute_norows(sql, values) 
+                            sql2 = 'SELECT ident_current(%s);' % self.iquote(table_name)
+                            rowid = self.cursor.execute(sql2).fetchone()[0] # NB direct cursor execute
                     else:
                         sql = 'INSERT INTO %s (%s) VALUES (%s);' % sqlsubs
                         count = self._execute_norows(sql, values)
@@ -917,10 +1043,13 @@ class Store(object):
         except self._dbmodule.Error as e:
             #print(type(e).__name__, str(e).split(':')[0])
             etype = type(e).__name__
-            msg = str(e).split(':')[0]
+            msg = str(e).split(':')
+            msg = msg[1] if self.db_type == 'SQLSERVER' else msg[0]
+            #print(etype, str(e), msg)
             if (self.db_type == 'POSTGRESQL' and etype in [ 'UndefinedTable', 'UndefinedColumn']) or \
                (self.db_type == 'MYSQL' and ("1146" in msg or "1054" in msg)) or \
-               (self.db_type == 'SQLITE' and ('no such table' in msg or 'no column named' in msg or 'no such column' in msg)):
+               (self.db_type == 'SQLITE' and ('no such table' in msg or 'no column named' in msg or 'no such column' in msg)) or \
+               (self.db_type == 'SQLSERVER' and ('Invalid object' in msg or 'Invalid column' in msg or 'Column not found' in msg)):
                 #self.commit() # note this ends transaction + saves any data to other table not yet committed, before create/alter table which would lose data
                 self.rollback()
                 return self.insert(data=data, table_name=table_name, replace=replace, create=True, **kwargs) # start again
@@ -997,32 +1126,88 @@ class Store(object):
     #    if self.db_type == 'SQLITE':
     #        self.connection.create_function(name, num_params, func)
             
-    def create_index(self, columns, table_name=None, if_not_exists = True, unique = False): # implcit commit
-        'Create a unique index on the column(s) passed.'
+    def create_index(self, columns, table_name=None, if_not_exists = True, unique = False): # implicit commit
+        'Create a unique index on the column(s) passed returning the index name'
         if not isinstance(columns, (list, tuple)):
             columns = [ columns ]
         table_name = table_name if table_name else self._data_table
         index_name = simplify(table_name) + '_' + '_'.join(map(simplify, columns))
-        index_cmd = 'UNIQUE INDEX' if unique else 'INDEX'
-        index_cmd = index_cmd + ' IF NOT EXISTS' if if_not_exists else index_cmd
-        sql = 'CREATE %s %s ON %s (%s);' % (index_cmd, self.iquote(index_name), self.iquote(table_name), ', '.join(map(self.iquote, columns)))
-        self._execute_norows(sql) 
+        index_cmd = 'CREATE UNIQUE INDEX' if unique else 'CREATE INDEX'
+        if self.db_type == 'SQLSERVER' or self.db_type == 'MYSQL': # in these two dbs text column indexes have to be fixed width type
+            all_columns = self.column_info(table_name)
+            for col, col_type in all_columns.items():
+                new_col_type = self._index_col_type(col_type)
+                #print(col_type, new_col_type)
+                if new_col_type != col_type:
+                    sqlsubs = (self.iquote(table_name), self.iquote(col), new_col_type) 
+                    sql = 'ALTER TABLE %s MODIFY COLUMN %s %s;' if self.db_type == 'MYSQL' else 'ALTER TABLE %s ALTER COLUMN %s %s;'
+                    #print(sql % sqlsubs)
+                    self._execute_norows(sql % sqlsubs)
+                    self.commit(implicit = True)
+        if (self.db_type == 'MYSQL' or self.db_type == 'SQLSERVER') and if_not_exists:
+            indices = self.indices(table_name)
+            if index_name not in indices:
+                sql = '%s %s ON %s (%s);' % (index_cmd, self.iquote(index_name), self.iquote(table_name), ', '.join(map(self.iquote, columns)))
+                #print(sql)
+                self._execute_norows(sql)
+            else:
+                return index_name
+        else:
+            index_cmd = index_cmd + ' IF NOT EXISTS' if if_not_exists else index_cmd
+            sql = '%s %s ON %s (%s);' % (index_cmd, self.iquote(index_name), self.iquote(table_name), ', '.join(map(self.iquote, columns)))
+            #print(sql)
+            self._execute_norows(sql) 
         self.commit(implicit = True)
+        return index_name
         
     def index(self, *args, **kwargs):
-        self.create_index(*args, **kwargs)
+        return self.create_index(*args, **kwargs)
+        
+    def drop_index(self, index_name, table_name=None, if_exists = False): # implicit commit
+        'Create a unique index on the column(s) passed.'
+        table_name = table_name if table_name else self._data_table
+        index_cmd = 'DROP INDEX'
+        if self.db_type == 'SQLSERVER' or self.db_type == 'MYSQL':
+            if not if_exists:
+                sql = '%s %s ON %s;' % (index_cmd, self.iquote(index_name), self.iquote(table_name))
+                #print(sql)
+                self._execute_norows(sql)
+            else:
+                index_cmd = '%s %s ON %s;' % (index_cmd, self.iquote(index_name), self.iquote(table_name))
+                if self.db_type == 'MYSQL':
+                    sql = 'IF EXISTS (SELECT * FROM information_schema.statistics WHERE table_name = %s AND index_name = %s) ' % (self._phchar, self._phchar) + index_cmd
+                else:
+                    sql = 'IF EXISTS (SELECT * FROM sys.indexes i INNER JOIN sys.tables AS t ON i.object_id = t.object_id WHERE t.name = %s and i.name = %s) ' % (self._phchar, self._phchar) + index_cmd
+                #print(sql)
+                self._execute_norows(sql, [table_name, index_name])
+        else:
+            index_cmd = index_cmd + ' IF EXISTS' if if_exists else index_cmd
+            sql = '%s %s;' % (index_cmd, self.iquote(index_name))
+            #print(sql)
+            self._execute_norows(sql) 
+        self.commit(implicit = True)
         
     def indices(self, table_name=None):
         ' alphabetically ordered list of index names for a particular table'
         table_name = table_name if table_name else self._data_table
         if self.db_type == 'POSTGRESQL':
-            sql = """SELECT indexname AS name FROM pg_indexes WHERE schemaname = 'public' AND tablename = %s ORDER BY name;""" % self.iquote(table_name)
+            sql = """SELECT indexname AS name FROM pg_indexes WHERE schemaname = 'public' AND tablename = %s ORDER BY name;""" % self._phchar
         elif self.db_type == 'MYSQL':
-            sql = """SELECT index_name AS name FROM information_schema.statistics WHERE table_name = %s ORDER BY name;""" % self.iquote(table_name)
+            sql = """SELECT DISTINCT index_name AS name FROM information_schema.statistics WHERE table_name = %s ORDER BY name;""" % self._phchar
+        elif self.db_type == 'SQLSERVER':
+            sql = """SELECT i.name as name FROM sys.indexes i INNER JOIN sys.tables AS t ON i.object_id = t.object_id WHERE i.name is not null and t.name = %s ORDER BY i.name;""" % self._phchar
         else:
-            sql = """SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = %s ORDER BY name;""" % self.iquote(table_name)
-        rows = self._execute_rows(sql) 
+            sql = """SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = %s ORDER BY name;""" % self._phchar
+        rows = self._execute_rows(sql, [table_name])
+        #print (rows)
         return sorted([ text(row[0]) for row in rows ])
+        
+    def _index_col_type(self, col_type):
+        if self.db_type == 'MYSQL' and col_type == 'text':
+            return 'varchar(%d)' % self._text_key_width # MySQL key has to have a fixed width
+        elif self.db_type == 'SQLSERVER' and 'char(max)' in col_type:
+            return col_type.replace('(max)', '(%d)' % self._text_key_width) # SQLServer key has to have a fixed width
+        return col_type
         
     def iquote(self, text, force=False): # quote an identfier
         return iquote(text, force=force, qchar=self._qchar)
@@ -1092,6 +1277,8 @@ class Store(object):
             return 'CURDATE()' 
         elif self.db_type == 'POSTGRESQL':
             return 'CURRENT_DATE'
+        elif self.db_type == 'SQLSERVER':
+            return 'CAST(GETDATE() AS DATE)'
         else:
             return "date('now')"
             
@@ -1116,6 +1303,8 @@ class Store(object):
             return 'NOW()' 
         elif self.db_type == 'POSTGRESQL':
             return 'LOCALTIMESTAMP'
+        elif self.db_type == 'SQLSERVER':
+            return 'GETDATE()'
         else:
             return "datetime('now')"
 
@@ -1131,6 +1320,8 @@ class Store(object):
                 sql = "(%s - (INTERVAL '%d day'))" % (dt, -inc)
             else:
                 sql = "(%s + (INTERVAL '%d day'))" % (dt, inc)
+        elif self.db_type == 'SQLSERVER':
+            sql = 'DATEADD(day, %d, %s)' % (inc, dt)
         else:
             if not this_dt:
                 sql = "date('now', '%+d day')" % inc  

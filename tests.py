@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, date, time
 import time as timetime
 import os
+from math import floor
 
 from dbtruck import Store, Pickle, ISODate, ISODateTime
 
@@ -13,7 +14,9 @@ def connect_string(testname):
     use_rowids = settings.USE_ROWIDS
     t_sep = settings.SQLITE_T_SEPARATOR
     connect_s = settings.CONNECT_STRING
-    if connect_s.startswith('mysql://') or connect_s.startswith('postgresql://') or connect_s.startswith('postgres://'):
+    #print('Connecting to:', connect_s)
+    if connect_s.startswith('mysql://') or connect_s.startswith('postgresql://') \
+            or connect_s.startswith('postgres://') or ';' in connect_s:
         return connect_s, t_sep, use_rowids
     os.makedirs(connect_s, exist_ok=True)
     dbfile = connect_s+os.sep+testname+'.sqlite'
@@ -144,26 +147,25 @@ class DBTruckTests(unittest.TestCase):
         teststore.save( data=applics, table_name=dbtable, commit=True)
         retrieved = teststore.select(table_name=dbtable) 
         r = retrieved[0]
-        #print(r)
         self.assertIsInstance(r['uid'], str, 'Not preserving string data')
-        self.assertIsInstance(r['atrue'], int, 'Not converting boolean data to integer')
-        self.assertIsInstance(r['number'], int, 'Not preserving integer data')
+        self.assertNotIsInstance(r['atrue'], bool, 'Not converting boolean data to integer') # note boolean is int so isinstance(int) does not work
+        self.assertIsInstance(r['number'], int, 'Not preserving integer data') 
         self.assertIsInstance(r['floating'], float, 'Not preserving float data')
         self.assertIsInstance(r['somebytes'], bytes, 'Not preserving bytes data')
         self.assertIsInstance(r['unicode'], str, 'Not preserving unicode data')
         self.assertIsInstance(r['atuple'], str, 'Not converting tuple data to dump unicode string')
+        self.assertIsInstance(r['jsonobj'], str, 'Not converting json data to dump unicode string')
+        self.assertIsInstance(r['anobj'], TestClass, 'Not preserving object data')
+        self.assertIsInstance(r['pickled'], dict, 'Not preserving pickled objects')
+        self.assertIsInstance(r['longstring'], str, 'Not preserving long strings')
         self.assertIsInstance(r['adate'], str, 'Not converting date data to string')
         self.assertIsInstance(r['adatetime'], str, 'Not converting datetime data to string')
         self.assertIsInstance(r['atime'], str, 'Not converting time data to string')
-        self.assertIsInstance(r['jsonobj'], str, 'Not converting json data to dump unicode string')
         self.assertIn('T', r['adatetime'], 'Not formatting datetime string 1 with T separator') 
         self.assertIsInstance(r['strdt'], str, 'Not preserving string date data')
         self.assertIsInstance(r['strdtm'], str, 'Not preserving string datetime data')
         self.assertIsInstance(r['strtm'], str, 'Not preserving string time data')
         self.assertIn('T', r['strdtm'], 'Not formatting datetime string 2 with T separator') 
-        self.assertIsInstance(r['anobj'], TestClass, 'Not preserving object data')
-        self.assertIsInstance(r['pickled'], dict, 'Not preserving pickled objects')
-        self.assertIsInstance(r['longstring'], str, 'Not preserving long strings')
         
     def test_date_functions(self):   
 
@@ -206,6 +208,12 @@ class DBTruckTests(unittest.TestCase):
             #print (conditions)
             result = teststore.select(table_name=dbtable, conditions=conditions )
             self.assertEqual(len(result), 3, 'SQL fixed datetime comparison using %s failing' % fail_msg)
+            if teststore.db_type != 'SQLITE' or ('T separator' in fail_msg and t_sep) or \
+                    ('space separator' in fail_msg and not t_sep): # datetime separator is significant in SQLite
+                conditions = "date_scraped > ?" 
+                #print (conditions)
+                result = teststore.select(table_name=dbtable, params=[val],conditions=conditions )
+                self.assertEqual(len(result), 3, 'SQL placeholder comparison using %s failing' % fail_msg)
         
         sql_week_after_decn = teststore.sql_dt_inc('decided_date', inc=7)
         sql_date_scraped = teststore.sql_dt('date_scraped')
@@ -230,9 +238,9 @@ class DBTruckTests(unittest.TestCase):
         
         result = teststore.select(table_name=dbtable, conditions=iso_conditions) # excludes anything scraped > 1 week after decided date
         self.assertEqual(len(result), 1, 'sql_dt_inc function with null date not working')
-        
-    def test_store_vars(self):    
-        
+
+    def test_store_vars(self):
+    
         anobj = TestClass() 
         strvar = u'xxxxx'
         binvar = b'xyx'
@@ -244,20 +252,21 @@ class DBTruckTests(unittest.TestCase):
             'somebytes': b'xaxy', 
             'unicode': u'blingblangy\u00e9\u00f8C', # e acute + degree
             'adate': date.today(),
-            'adatetime': datetime.now(),
             'atime': datetime.now().time(),
+            'adatetime': datetime.now(),
             'jsonobj': { 'uni': u'123 \u0115\u00f8C', 'data': 999.99, 'default': 'def' }, # e caron + degree
             #'isodate': '1973-01-01', 
             'atuple': ( 1, '2', 3.0 ),
             'aset': { 1, '2', 3.0, 'sss' },
-            'object': anobj,
             'strvar': strvar,
             'binvar': binvar,
+            'object': anobj,
             }
             
         connect, t_sep, use_rowids = connect_string(self._testMethodName)
         teststore = Store(connect, json_str_output=True, dates_str_output=True, sqlite_t_sep=t_sep, has_rowids = use_rowids) # note the string output settings should be ignored for vars
         teststore.clear_vars()
+        
         for k, v in mydata.items():
             teststore.set_var(k, v)
         for k, v in mydata.items():
@@ -265,6 +274,9 @@ class DBTruckTests(unittest.TestCase):
             #print(v, storev, type(v), type(storev))
             if isinstance(v, TestClass):
                 self.assertEqual(type(v), type(storev), 'Failed to set/get identical class types: %s -> %s' % (str(v), str(storev)))
+            elif teststore.db_type == 'SQLSERVER' and isinstance(v, time): # ignore microseconds in SQL Server tests = missing
+                newv = v.replace(microsecond = 0)
+                self.assertEqual(newv, storev, 'Failed to set/get identical variable: %s -> %s' % (str(newv), str(storev)))
             else:
                 self.assertEqual(v, storev, 'Failed to set/get identical variable: %s -> %s' % (str(v), str(storev)))
         k = 'newstr'
@@ -399,31 +411,47 @@ class DBTruckTests(unittest.TestCase):
     
     def test_select_data(self):    
     
-        # booleans
         connect, t_sep, use_rowids = connect_string(self._testMethodName)
         teststore = Store(connect, sqlite_t_sep=t_sep, has_rowids = use_rowids)
+        
+        # booleans
         dbtable = self._testMethodName + '_1'
         teststore.drop(dbtable, if_exists = True)
-        
         data = {  'atrue': True, 'afalse': True, 'anull': True  }
         teststore.create_table( data=data, table_name=dbtable)
         data = {  'atrue': True, 'afalse': False, 'anull': None  }
         teststore.insert( data=data, table_name=dbtable, commit=True)
-        
-        selected = teststore.select(table_name=dbtable, conditions='atrue')
-        self.assertEqual(len(selected), 1, 'Failed to select boolean true as true')
-        selected = teststore.select(table_name=dbtable, conditions='not atrue')
-        self.assertEqual(len(selected), 0, 'Failed to ignore boolean true as not true')
-        
-        selected = teststore.select(table_name=dbtable, conditions='not afalse')
-        self.assertEqual(len(selected), 1, 'Failed to select boolean false as not true')
-        selected = teststore.select(table_name=dbtable, conditions='afalse')
-        self.assertEqual(len(selected), 0, 'Failed to ignore boolean false as true')
-        
-        selected = teststore.select(table_name=dbtable, conditions='anull')
-        self.assertEqual(len(selected), 0, 'Failed to ignore null with implicit boolean true')
-        selected = teststore.select(table_name=dbtable, conditions='not anull')
-        self.assertEqual(len(selected), 0, 'Failed to ignore null with implicit boolean false')
+
+        if teststore.db_type == 'SQLSERVER':
+            selected = teststore.select(table_name=dbtable, conditions='atrue=1')
+            self.assertEqual(len(selected), 1, 'Failed to select boolean true as 1')
+            selected = teststore.select(table_name=dbtable, conditions='atrue=0')
+            self.assertEqual(len(selected), 0, 'Failed to ignore boolean true as 0')
+            
+            selected = teststore.select(table_name=dbtable, conditions='afalse=0')
+            self.assertEqual(len(selected), 1, 'Failed to select boolean false as 0')
+            selected = teststore.select(table_name=dbtable, conditions='afalse=1')
+            self.assertEqual(len(selected), 0, 'Failed to ignore boolean false as 1')
+            
+            selected = teststore.select(table_name=dbtable, conditions='anull=1')
+            self.assertEqual(len(selected), 0, 'Failed to ignore null with =1 boolean test')
+            selected = teststore.select(table_name=dbtable, conditions='anull=0')
+            self.assertEqual(len(selected), 0, 'Failed to ignore null with =0 boolean tes')
+        else:
+            selected = teststore.select(table_name=dbtable, conditions='atrue')
+            self.assertEqual(len(selected), 1, 'Failed to select boolean true as true')
+            selected = teststore.select(table_name=dbtable, conditions='not atrue')
+            self.assertEqual(len(selected), 0, 'Failed to ignore boolean true as not true')
+            
+            selected = teststore.select(table_name=dbtable, conditions='not afalse')
+            self.assertEqual(len(selected), 1, 'Failed to select boolean false as not true')
+            selected = teststore.select(table_name=dbtable, conditions='afalse')
+            self.assertEqual(len(selected), 0, 'Failed to ignore boolean false as true')
+            
+            selected = teststore.select(table_name=dbtable, conditions='anull')
+            self.assertEqual(len(selected), 0, 'Failed to ignore null with implicit boolean true')
+            selected = teststore.select(table_name=dbtable, conditions='not anull')
+            self.assertEqual(len(selected), 0, 'Failed to ignore null with implicit boolean false')
         
         #list_select and dict_select
         dbtable = self._testMethodName + '_2'
@@ -440,6 +468,17 @@ class DBTruckTests(unittest.TestCase):
         self.assertEqual(len(selected), 3, 'Failed to select using list')
         selected = teststore.match_select(match_dict={ 'surname': 'Brunel', 'forename': 'Isambard' }, table_name=dbtable)
         self.assertEqual(len(selected), 1, 'Failed to select using dict')
-          
+        
+        #indexes
+        #print(teststore.column_info(dbtable))
+        teststore.create_index(['surname', 'forename'], table_name=dbtable, unique=True)
+        inds = teststore.indices(table_name=dbtable)
+        self.assertEqual(len(inds), 1, 'Failed to create index')
+        self.assertEqual(inds[0], 'testselectdata2_surname_forename', 'Failed to create named index')
+        teststore.drop_index('testselectdata2_surname_forename', table_name=dbtable)
+        inds = teststore.indices(table_name=dbtable)
+        self.assertEqual(len(inds), 0, 'Failed to drop index')
+        
+
 if __name__ == '__main__':
     unittest.main()

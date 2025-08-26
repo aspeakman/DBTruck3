@@ -20,6 +20,7 @@ Basic installation (for standalone testing) - steps are as follows:
     Run 'python -m pip install --upgrade pip setuptools wheel'
     If you want to use PostgreSQL 'python -m pip install psycopg2'
     If you want to use MySQL 'python -m pip install mysql-connector-python'
+    If you want to use SQL Server 'python -m pip install mssql-python'
     Try 'python tests.py'
     
 ### To update software version subsequently ###

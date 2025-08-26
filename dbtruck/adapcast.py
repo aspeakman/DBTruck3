@@ -38,6 +38,13 @@ try:
     MYSQCON = True
 except ImportError:
     MYSQCON = False
+    
+try:
+    import mssql_python
+    from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+    SQLSRV = True
+except ImportError:
+    SQLSRV = False
 
 DENC = 'utf-8' # default encoding for text values
 ISO_DATE_REGEX = re.compile(r'^\d{4}-\d{2}-\d{2}$') # ISO8601 YYYY-MM-DD
@@ -77,8 +84,11 @@ def adapt_t_datetime(val):
     return val.isoformat('T') if val is not None else None # impose non-standard Python standard 'T' for stored dates - use only by SQLITE special cases
         
 def adapt_pickle(val):
-    return pickle.dumps(val) if val is not None else None # returns bytes
-        
+    if SQLSRV:
+        return pickle.dumps(val, protocol=0) if val is not None else None # returns human readable bytes (driver throws error \x00 bytes in stream)
+    else:
+        return pickle.dumps(val) if val is not None else None # bytes
+
 # Converter functions = convert/cast a stored object from the database into a custom Python type
 # NOTE input to convert_ functions is bytes from database, output is a Python object
 # NOTE input to postcast_ functions is an extracted/converted object
@@ -102,8 +112,11 @@ def convert_bytearray(val):
 def convert_integer(val): 
     return int(val) if val is not None else None
     
-def convert_boolean(val):
+def convert_boolean(val): # assumes underlying storage is integer
     return bool(int(val)) if val is not None else None
+    
+def convert_boolbool(val): # assumes underlying storage is boolean
+    return bool(val) if val is not None else None
     
 def convert_boolint(val):
     return int(val) if val is not None else None
@@ -116,7 +129,7 @@ def convert_jsonset(val):
         
 def convert_jsontuple(val): 
     return tuple(json.loads(val)) if val is not None else None
-    
+        
 def postcast_jsonset(val): 
     return set(val) if isinstance(val, list) else val
         
@@ -126,7 +139,7 @@ def postcast_jsontuple(val):
 def convert_isodate(val): # retrieve internal ISO date (bytes) as date object
     return date(*map(int, val.split(b'-'))) if val is not None else None
     
-def convert_dateiso(val): # retrieve date object as ISO unicode date
+def convert_dateiso(val): # retrieve date/time object as ISO unicode date
     return val.isoformat() if val is not None else None 
 
 def convert_timeiso(val): # retrieve time object as ISO unicode time
@@ -617,8 +630,12 @@ if PSYCOPG2:
         return convert_integer(i)
         
     def convert_pg_bool_int(val, cur): 
-        i = psycopg2.extensions.INTEGER(val, cur) # INTEGER typecaster
+        i = psycopg2.extensions.BOOLEAN(val, cur) # BOOLEAN typecaster
         return convert_boolint(i)
+        
+    def convert_pg_boolean(val, cur): 
+        i = psycopg2.extensions.BOOLEAN(val, cur) # BOOLEAN typecaster
+        return convert_boolbool(i)
             
     def convert_pg_date_iso(val, cur): #
         dt = PYDATE(val, cur) # psycopg2.extensions.DATE typecaster is an alias for PYDATE
@@ -717,6 +734,7 @@ if PSYCOPG2:
         'date': PYDATE, # or psycopg2.extensions.DATE
         'timestamp': PYDATETIME,  # psycopg2.DATETIME
         'time': PYTIME,  # psycopg2.DATETIME
+        'boolean': convert_pg_boolean,
 
     }
     
@@ -748,4 +766,123 @@ if PSYCOPG2:
         
     }
 
+if SQLSRV:
 
+    SQLSERVER_CREATE_SEQ = ( 
+        # an ordered sequence of 3-tuples which determines the database column types created for each Python sample object supplied
+        # 1st element is the type - either a Python base type OR the type of an Adapter class with a cast() static method
+        # 2nd element is the base/column/storage type
+        # 3rd element is any cast type - second stage conversion after extraction (stored as a comment)      
+        (bool, 'bit', 'boolint'), # before int
+        (int, 'bigint', None), 
+        
+        (float, 'float', None),
+        
+        (ISODate, 'date', 'isoformat'), # matches ISO 8601 strings and date objects
+        (ISODateTime, 'datetime2', 'isoformat'), # matches ISO 8601 strings and datetime objects
+        (ISOTime, 'time', 'isoformat'), # matches ISO 8601 strings and time objects
+        
+        # string tests come after ISO string dates tests
+        (bytearray, 'varbinary(max)', 'bytearray'),  
+        (bytes, 'varbinary(max)', None), 
+        (str, 'nvarchar(max)', None), 
+
+        (dict, 'nvarchar(max)', 'json'),
+        (list, 'nvarchar(max)', 'json'),
+        (tuple, 'nvarchar(max)', 'jsontuple'),
+        (set, 'nvarchar(max)', 'jsonset'),
+        
+        # default - matches any picklable object
+        (Pickle, 'varbinary(max)', 'pickle'),
+        
+    )
+    
+    class DBTruckSQLServCursor(mssql_python.cursor.Cursor):
+        
+        # NOTE time format strips out fractional seconds
+        # NOTE timestamp format restricts fractional seconds to milliseconds (3 digits)
+        
+        _sql_datetimetypes = (ddbc_sql_const.SQL_TIMESTAMP.value, ddbc_sql_const.SQL_TYPE_TIMESTAMP_WITH_TIMEZONE.value,
+            ddbc_sql_const.SQL_TYPE_TIMESTAMP.value, ddbc_sql_const.SQL_DATETIME2.value)
+        _sql_datetypes = (ddbc_sql_const.SQL_DATE.value, ddbc_sql_const.SQL_TYPE_DATE.value)
+        _sql_timetypes = (ddbc_sql_const.SQL_TIME.value, ddbc_sql_const.SQL_TYPE_TIME.value)
+
+        def _map_data_type(self, sql_type): # Note not a converter function, just describes fixed SQL -> Python mappings for use in description property
+            """
+            Map SQL data type to Python data type.
+
+            Args:
+                sql_type: SQL data type.
+
+            Returns:
+                Corresponding Python data type.
+            """
+            if sql_type in self._sql_datetimetypes:
+                return datetime
+            elif sql_type in self._sql_datetypes:
+                return date
+            elif sql_type in self._sql_timetypes:
+                return time
+            else:
+                return super()._map_data_type(sql_type)
+                
+        def _map_sql_type(self, param, parameters_list, i): # Adapter function Python -> SQL
+            """
+            Map a Python data type to the corresponding SQL type, 
+            C type, Column size, and Decimal digits.
+            Takes:
+                - param: The parameter to map.
+                - parameters_list: The list of parameters to bind.
+                - i: The index of the parameter in the list.
+            Returns:
+                - A tuple containing the SQL type, C type, column size, and decimal digits.
+            """
+            if isinstance(param, (dict, list, tuple)):
+                parameters_list[i] = adapt_json(param)
+                return (
+                        ddbc_sql_const.SQL_WLONGVARCHAR.value,
+                        ddbc_sql_const.SQL_C_WCHAR.value,
+                        len(parameters_list[i]),
+                        0,
+                    )
+            if isinstance(param, set):
+                parameters_list[i] = adapt_jsonset(param)
+                return (
+                        ddbc_sql_const.SQL_WLONGVARCHAR.value,
+                        ddbc_sql_const.SQL_C_WCHAR.value,
+                        len(parameters_list[i]),
+                        0,
+                    )
+            if isinstance(param, Pickle):
+                parameters_list[i] = param.adapted() # bytes
+                param = param.adapted()
+            elif isinstance(param, ISOTime): # time = NOT WORKING = no microseconds
+                parameters_list[i] = time.fromisoformat(param.adapted()) # isoformat string
+                #print(parameters_list[i])
+                return (
+                    ddbc_sql_const.SQL_TIME.value,
+                    ddbc_sql_const.SQL_C_TYPE_TIME.value,
+                    15,
+                    6,
+                )
+            elif isinstance(param, Adapter): # dates, datetimes
+                parameters_list[i] = param.adapted() # isoformat string
+                param = param.adapted()
+            return super()._map_sql_type(param, parameters_list, i)
+            
+    
+    SQLSERVER_CAST_MAP = { # custom  converters (SQL to Python object) - based on second cast column above, NOTE transforms take place AFTER data is extracted from database
+        
+        # Second stage - post extraction casting based on stored column comments 
+        'pickle': postcast_pickle, # extracted as binary
+        'json': convert_json, # note removed if json_str_output is True
+        'jsontuple': convert_jsontuple, # note removed if json_str_output is True
+        'jsonset': convert_jsonset, # note removed if json_str_output is True
+        'bytearray': convert_bytearray,
+        'isoformat': convert_dateiso, # note removed if dates_str_output is False
+        'boolint': convert_boolint, # note removed if bool_int_output is False
+        
+    }
+    
+
+    

@@ -2,9 +2,10 @@ DBTruck3
 =========
 
 **DBTruck3** provides a Python base class called Store which is a relaxed schema-less interface 
-to a single non-normalised table in an SQLite, PostgreSQL or MySQL database.
+to a data table and stored metadata in an SQLite, PostgreSQL, MySQL or SQL Server database.
 
-Currently the default database is SQLite, with the optional use of PostgreSQL (psycopg2) or MySQL (mysql.connector) instead
+Currently the default database is SQLite, with the optional use of PostgreSQL (psycopg2), MySQL (mysql.connector)
+or SQL Server (mssql_python) instead
 
 DBTruck3 was inspired by and is loosely based on the 2011 ScraperWiki [Dumptruck](https://github.com/scraperwiki/dumptruck) module
 
@@ -79,7 +80,8 @@ you can use the 'connect_details' argument.
 Store has default keyword arguments as follows:
 
     Store(connect_details, data_table = 'dbtruckdata', vars_table = 'dbtruckvars', default_commit = True,  
-            timeout = 5, json_str_output = False, dates_str_output = False, bool_int_output = False )
+            timeout = 5, json_str_output = False, dates_str_output = False, bool_int_output = False, 
+            has_rowids = False, text_key_width = 100)
 
 * `connect_details` is the SQlite database file to create or save to; alternatively a URI connection string 
      can be supplied for PostgreSQL (postgresql://user:password@host:port/database) or MySQL (mysql://user:password@host:port/database)
@@ -89,7 +91,7 @@ Store has default keyword arguments as follows:
     to disable the get_var and save_var methods.
 * `default_commit` is whether changes to the database should be committed automatically; default is `True`.
     If it is set to `False`, changes must be committed with the `commit` method or with the `commit` keyword argument.
-	If it is set to `True`, you can defer the commit for a particular operation by supplying a `commit=False` keyword argument.
+    If it is set to `True`, you can defer the commit for a particular operation by supplying a `commit=False` keyword argument.
 * `timeout` is the timeout parameter for the connection to the underlying database; default is 5 (seconds).
 * `json_str_output` - by default Python `dict`, `list`, `tuple` and `set` objects are stored as JSON format strings but returned in the original object 
     form; however if this is set to `True` they are returned as JSON strings
@@ -99,11 +101,13 @@ Store has default keyword arguments as follows:
     to `True` they are returned as the integer values `1` and `0`
 * `has_rowids` - if this is set to `True` a `rowid` column is created in the table and each row is allocated a unique numeric value when stored; default is `False`.
    This is useful if you want to know the order in which data were inserted
+* `text_key_width` - sets the fixed size of text fields (default 100) in MySQL and SQL Server databases used as keys or in indexes
     
 Note if you want to use PostgreSQL or MySQL as your underlying database (see `connect_details` above) run one of these commands first:
 
     python -m pip install psycopg2
     python -m pip install mysql-connector-python
+    python -m pip install mssql-python
 
 ### Non-default tables
 It is not necessary to specify a table name if you only use one table. If not specified
@@ -111,7 +115,7 @@ the default table name of `dbtruckdata` will be used. However if you use several
 which by supplying a `table_name` to any operation.
 
     st.insert( {"name":"Thomas","surname":"Levine"}, table_name='people')
-	st.dump(table_name='people')
+    st.dump(table_name='people')
 
 ### Inserting multiple rows
 You can pass a list of dictionaries to insert multiple rows at once
@@ -166,16 +170,16 @@ a subset of columns by specifiying a `fields` list. Example:
 
 Note the `conditions` parameter is passed directly to the WHERE clause of the underlying SQL so it is good practice to substitute any variables 
 using `?` place holders, as shown in the example, where the appropriate values are quoted and inserted from the `params` list. (Note the ? 
-place holder used here is converted to the appropriate place holder characters if you are using PostgreSQL or MySQL).
+place holder used here is converted to the appropriate place holder character if you are using PostgreSQL or MySQL).
 
 Alternatively you can leave out `params` and use `Store.iquote` (quotes an identifier) or `Store.nquote` (quotes a literal nullable value)
 to do appropriate variable substitution into `conditions` as a Python string.
 
-	surname_field = 'surname'
-	chosen_engineer = 'Brunel'
-	subst = { 'field': st.iquote(surname_field), 'value': st.nquote(chosen_engineer) }
-	conditions = '%(field)s = %(value)s ORDER BY %(field)s' % subst
-	data = st.select(fields = [surname_field], table_name = 'engineers', conditions = conditions)
+    surname_field = 'surname'
+    chosen_engineer = 'Brunel'
+    subst = { 'field': st.iquote(surname_field), 'value': st.nquote(chosen_engineer) }
+    conditions = '%(field)s = %(value)s ORDER BY %(field)s' % subst
+    data = st.select(fields = [surname_field], table_name = 'engineers', conditions = conditions)
 
 Note you can also add further SQL restrictions to `conditions` eg LIMIT or ORDER BY as in the above example
 
@@ -192,17 +196,18 @@ on the settings. If `has_rowids` is set to `True` then each row also has a uniqu
 
 Varations on `select` are `match_select` (select matches from a list of values) and `list_select` (select matches form a dict of keys and values)
 
-	st.list_select(key_field = 'surname', match_list = [ 'Brunel' ], table_name = 'engineers')
-	st.match_select(match_dict = { 'surname': 'Brunel' }, table_name = 'engineers')
+    st.list_select(key_field = 'surname', match_list = [ 'Brunel' ], table_name = 'engineers')
+    st.match_select(match_dict = { 'surname': 'Brunel' }, table_name = 'engineers')
 
 ### Deleting
 The delete operation (`Store.delete`) also requires a `conditions` parameter to specify which rows will be affected. 
 
-	st.delete(table_name = 'engineers', conditions = 'surname = ?', params = [ 'Brunel' ] )
+    st.delete(table_name = 'engineers', conditions = 'surname = ?', params = [ 'Brunel' ] )
 
 Deleting without conditions is not allowed - but you can force a wholesale delete by supplying an always true condition like '1=1'
 
-Other methods (described below) that can filter records based on 'conditions' and 'params' with ? placeholders are `Store.dump_to`, `Store.get_max`, `Store.count`, `Store.get_min`
+Other methods (described below) that can filter records based on 'conditions' and 'params' with ? placeholders are `Store.dump_to`, 
+`Store.get_max`, `Store.count`, `Store.get_min`.
 
 ### Executing SQL
 You can also use normal SQL, for example to retrieve data from the database, or to update fields
@@ -210,7 +215,7 @@ in existing rows. However you need to be careful
 that the syntax is acceptable to the underlying database and that values are appropriately quoted.
 
     data = st.execute("SELECT name, surname FROM `engineers` WHERE surname = 'Brunel'")
-	date = st.execute('SELECT * from `coal`;')
+    date = st.execute('SELECT * from `coal`;')
 
 ### Metadata values
 You can save and retrieve miscellaneous metadata values using the Store class instance. The `Store.get_var` and 
@@ -225,7 +230,7 @@ For example, you can record which page the last run of a script managed to get u
 Each variable is stored in a special `vars_table` that you can specify when initializing the Store class.
 If you don't specify one, the table is named `dbtruckvars`.
 
-Note Python objects other than an int, float or string type, eg dict and list can be stored. 
+Note all standard Python objects including int, float, str, dict, bool, bytes, list, date, time and datetime can be stored. 
 Complex objects will also be stored in pickled form.
 
 The `Store.all_vars` method returns all metadata variables and their values as a dict, the `Store.clear_vars` methods deletes them all.
@@ -236,7 +241,7 @@ of the appropriate type are created on the fly when new data is inserted.
 
 However you can also use `Store.create_table` to create the initial schema, based on a data template. 
 For example, if the table `tools` does not exist, the following call will create the table
-`tools` with the columns `tool_type` and `weight`, with the types `TEXT` and `INTEGER`,
+`tools` with the columns `tool_type` and `weight`, with text and integer types,
 respectively. Note that it does not insert the template dictionary values ("jackhammer" and 58)
 into the table.
 
@@ -250,67 +255,75 @@ The columns will be created in the specified order.
 
 You can define the primary `keys` for a table when you create it (or you can create an equivalent 'unique' index, see below)
 
-	st.create_table( {"tool_type":"jackhammer", "weight": 58}, table_name="tools", keys=['tool_type'] )
+    st.create_table( {"tool_type":"jackhammer", "weight": 58}, table_name="tools", keys=['tool_type'] )
 
 ### Deleting tables
 `Store.drop_table` drops a table. Note you have to specify a `table_name`, so you cannot delete the default table unless you name it.
 
     st.drop_table(table_name="diesel-engineers")
-	
+    
 It is an error to try to drop a table if it does not exist. Add the `if_exists' parameter to avoid this.
 
-	st.drop_table(table_name="diesel-engineers", if_exists=True)
+    st.drop_table(table_name="diesel-engineers", if_exists=True)
 
 ### Listing tables and columns
 List table names with the `Store.tables` command, columns with `Store.columns` and key columns with `Store.key_columns`
 
-	st.tables()
-	st.columns(table_name="diesel-engineers")
-	st.key_columns(table_name="diesel-engineers")
-	
+    st.tables()
+    st.columns(table_name="diesel-engineers")
+    st.key_columns(table_name="diesel-engineers")
+    
+Use `Store.column_info` to get a dictionary of columns and their data types
+
+    st.column_info(table_name="diesel-engineers")
+    
 ### Saving (insert or replace)
 The insert operation fails if you are trying to insert a row with a duplicate key, as in the following example.
 
-	st.create_table( {"tool_type":"jackhammer", "weight": 58}, table_name="tools", keys=['tool_type'] )
-	st.insert( {"tool_type":"woodsaw", "weight": 5, "colour": 'blue' } )
-	st.insert( {"tool_type":"woodsaw", "weight": 7} ) # this causes an error because a 'woodsaw' entry already exists
+    st.create_table( {"tool_type":"jackhammer", "weight": 58}, table_name="tools", keys=['tool_type'] )
+    st.insert( {"tool_type":"woodsaw", "weight": 5, "colour": 'blue' } )
+    st.insert( {"tool_type":"woodsaw", "weight": 7} ) # this causes an error because a 'woodsaw' entry already exists
 
 An alternative is `Store.save` which completely replaces an existing keyed row with the latest version
 
-	st.save( {"tool_type":"woodsaw", "weight": 5, "colour": 'blue'} )
-	st.save( {"tool_type":"woodsaw", "weight": 7} ) # this works, but NOTE it replaces the previous row, so the 'colour' value for 'woodsaw' is now NULL
+    st.save( {"tool_type":"woodsaw", "weight": 5, "colour": 'blue'} )
+    st.save( {"tool_type":"woodsaw", "weight": 7} ) # this works, but NOTE it replaces the previous row, so the 'colour' value for 'woodsaw' is now NULL
 
 
 ### Indexes
-To create an index, first create an empty table. (See "Creating empty tables" above.)
+To create an index, first create a table with the fields you want to index. (See "Creating tables and columns" above.)
 
-Then, use the `Store.create_index` method. For example his will create a non-unique index on the column `tool_type`.
+Then, use the `Store.create_index` method. For example his will create a non-unique index on the column `tool_type`, returning the index name
+based on the supplied table name and columns.
 
     st.create_index('tool_type', table_name='tools')
+    ==> tools_tooltype
 
-To create a unique index (equivalent to creating the table with a primary key) use the keyword argument `unique = True`.
+Alternatively to create a unique index (equivalent to creating the table with a primary key) use the keyword argument `unique = True`.
 
     st.create_index( 'tool_type', table_name='tools', unique=True )
+    ==> tools_tooltype
 
 You can also specify multi-column indices.
 
     st.create_index(['tool_type', 'weight'], table_name='tools')
-
-The Store class names indices according to the supplied table name and columns.
-The index created in the previous example would be named `tools_tooltype_weight`.
+    ==> tools_tooltype_weight
 
 To get a list of created indexes use the `Store.indices` method.
 which returns a list of the indices for a particular table.
 
     st.indices(table_name='tools')
 
-The Store class does not implement any other special methods for viewing or removing indices, but 
-you can use `Store.execute` to do this. For example the following command deletes the index in SQLITE.
+To delete an index.
 
-    st.execute('DROP INDEX tools_tooltype_weight')
+    st.drop_index('tools_tooltype_weight', table_name='tools')
+
+It is an error to try to drop an if it does not exist. Add the `if_exists' parameter to avoid this.
+
+    st.drop_index('tools_tooltype_weight', table_name='tools', if_exists=True)
 
 ### Delayed commits (atomic operations / transactions)
-By default, the `insert`, `save`, `save_var`, `delete` and `execute` methods automatically commit changes.
+By default, the `insert`, `save`, `save_var`, `clear_vars`, `delete` and `execute` methods automatically commit changes.
 You can delay a series of such operations from commiting until all have completed as a group.
 
 Do this by passing `commit=False` to each method.
@@ -319,22 +332,22 @@ But always make the transaction permanent at the end by committing manually with
     st = Store("dbtruck.db")
     st.insert({"name":"Bagger 293","manufacturer":"TAKRAF","height":95}, commit=False)
     st.save_var('page_number', 42, commit=False)
-	# note you can test for errors and do st.rollback() here to undo both above operations
+    # note you can test for errors and do st.rollback() here to undo both above operations
     st.commit() # both updates made permanent here
-	
+    
 ### Max, min and count
 You can get a maximum and minimum value for a particular `field` and an overall count or a count based on some conditions
 
-	max_weight = st.get_max(field='weight', table_name='tools')
-	min_weight = st.get_min(field='weight', table_name='tools')
-	num_blue_tools = st.count(conditions='colour = ?', params='blue', table_name='tools')
+    max_weight = st.get_max(field='weight', table_name='tools')
+    min_weight = st.get_min(field='weight', table_name='tools')
+    num_blue_tools = st.count(conditions='colour = ?', params='blue', table_name='tools')
     
 ### Other functions
 Miscellaneous useful functions
 
     st.dump_to(filename, table_name='tools') # dumps a table to a CSV file
     st.load_from(filename, table_name='tools') # loads a table from a CSV file
-    st.vacuum() # compresses the database
+    st.vacuum() # compresses the database (note has no effect in SQL Server)
     st.close() # closes the connection to the database
 
 ### Information about Python data types
@@ -345,9 +358,11 @@ Miscellaneous useful functions
 * integers - are output as the 'int' type on Python 3
 * dates - ISO8601 format dates/datetimes/times are detected on input and stored in the underlying database in appropriate date fields, if you specify
        `dates_str_output` note that datetimes are output in Python ISO8601 format (with a 'T' separator not a space)
-* booleans - when setting up select conditions using a boolean field pay attention to the SQL syntax - it is best to test for an implicit true and implicit false
-      eg `WHERE bool_field` and `WHERE NOT bool_field` will work on all three underlying databases whereas `bool_field <> 0` or `bool_field = 'false'` will depend on the
-	  underlying database.
+* booleans - when setting up select conditions using a boolean field pay attention to the SQL syntax - 
+      in MySQL, PostgreSQL and SQlite it is best to test for an implicit true and implicit false
+      ie `WHERE bool_field` and `WHERE NOT bool_field` will work across all three underlying databases (whereas `bool_field <> 0` or `bool_field = 'false'` will depend on the
+      underlying database sysntax).
+      In SQL Server, implicit true/false does not work, you should use `WHERE bool_field=0` (false) and `WHERE bool_field=1` (true) as your tests
 
 ### SQL convenience functions
 The following Store methods return appropriately formatted and quoted SQL fragments 

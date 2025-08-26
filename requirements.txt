@@ -1,4 +1,5 @@
 # Any or none of the following
 #psycopg2 # for Postgres - use psycopg2-binary on Windows
 #mysql-connector-python # official Oracle supported mySQL API - see https://dev.mysql.com/doc/connector-python/en/ (NOTE not mysql-connector)
+#mssql-python # preview Microsoft supported driver - see https://learn.microsoft.com/en-us/sql/connect/python/mssql-python/python-sql-driver-mssql-python?view=sql-server-ver17
 
