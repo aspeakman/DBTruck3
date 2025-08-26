@@ -2,7 +2,7 @@ DBTruck3
 =========
 
 **DBTruck3** provides a Python base class called Store which is a relaxed schema-less interface 
-to data tables and stored metadata in an SQLite, PostgreSQL, MySQL or SQL Server database.
+to data tables and stored metadata in a database.
 
 Currently the default database is SQLite, with the optional use of PostgreSQL (psycopg2), MySQL (mysql.connector)
 or SQL Server (mssql_python) instead
@@ -233,7 +233,7 @@ Each variable is stored in a special `vars_table` that you can specify when init
 If you don't specify one, the table is named `dbtruckvars`.
 
 Note: all standard Python objects including int, float, str, dict, bool, bytes, list, date, time and datetime can be stored. 
-(see 'Information about Python data types' below). Complex objects will also be stored in pickled form.
+(see 'I/O details of Python data types' below). Complex objects will also be stored in pickled form.
 
 The `Store.all_vars` method returns all metadata variables and their values as a dict, the `Store.clear_vars` methods deletes them all.
 
@@ -353,7 +353,7 @@ Miscellaneous useful functions
     st.vacuum() # compresses the database (note has no effect in SQL Server)
     st.close() # closes the connection to the database
 
-### Information about accepted Python data types
+### I/O details of Python data types
 * `bool` - normally returned as `True` or `False`, but if you specify `bool_int_output`, values are returned as 1 or 0.
         When setting up select conditions using a boolean field pay attention to the SQL syntax - 
         in MySQL, PostgreSQL and SQlite it is best to test for an implicit true and implicit false
@@ -361,7 +361,7 @@ Miscellaneous useful functions
         underlying database syntax).
         In SQL Server, implicit true/false does not work, you should use `WHERE bool_field=0` (false) and `WHERE bool_field=1` (true) as your tests.
 * `bytearray` - stored as bytes (and converted back on output)
-* `bytes`
+* `bytes` - binary bytes
 * `datetime.date` - date objects and ISO8601 format strings are accepted as input
         If you specify `dates_str_output` dates  are output as ISO8601 strings
 * `datetime.datetime` - datetime objects and ISO8601 format strings are are accepted as input. 
@@ -371,11 +371,11 @@ Miscellaneous useful functions
         If you specify `dates_str_output` times are output as ISO8601 strings
 * `dict` - stored as a JSON string (which means the keys will always be converted to strings when output), but normally
         returned as a `dict`, unless you specify `json_str_output`.
-* `float`
-* `int`
+* `float` - floating point numbers
+* `int` - integer numbers
 * `list` - stored as a JSON string but converted back on output, unless you specify `json_str_output`.
 * `set` - stored as a JSON list string but converted back on output, unless you specify `json_str_output`.
-* `str`
+* `str` - unicode text
 * `tuple` - stored as a JSON list string but converted back on output, unless you specify `json_str_output`.
 
 
