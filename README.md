@@ -83,8 +83,9 @@ Store has default keyword arguments as follows:
             timeout = 5, json_str_output = False, dates_str_output = False, bool_int_output = False, 
             has_rowids = False, text_key_width = 100)
 
-* `connect_details` is the SQlite database file to create or save to; alternatively a URI connection string 
+* `connect_details` is the SQlite database file to create or save to; alternatively a URI/connection string 
      can be supplied for PostgreSQL (postgresql://user:password@host:port/database) or MySQL (mysql://user:password@host:port/database)
+     or SQL Server (Server=ServerAddress;Database=myDataBase;UID=myUsername;PWD=myPassword;)
 * `data_table` is the name of the default data table to use for insert and save methods; default is `dbtruckdata`. 
 * `vars_table` is the name of the table to use for `get_var`
     and `save_var` methods (see below); default is `dbtruckvars`. Set it to `None`
