@@ -353,25 +353,29 @@ Miscellaneous useful functions
     st.close() # closes the connection to the database
 
 ### Information about accepted Python data types
-* `bool` - when setting up select conditions using a boolean field pay attention to the SQL syntax - 
-      in MySQL, PostgreSQL and SQlite it is best to test for an implicit true and implicit false
-      ie `WHERE bool_field` and `WHERE NOT bool_field` will work across all three underlying databases (whereas `bool_field <> 0` or `bool_field = 'false'` will depend on the
-      underlying database syntax).
-      In SQL Server, implicit true/false does not work, you should use `WHERE bool_field=0` (false) and `WHERE bool_field=1` (true) as your tests
+* `bool` - normally returned as `True` or `False`, but if you specify `bool_int_output`, values are returned as 1 or 0.
+        When setting up select conditions using a boolean field pay attention to the SQL syntax - 
+        in MySQL, PostgreSQL and SQlite it is best to test for an implicit true and implicit false
+        ie `WHERE bool_field` and `WHERE NOT bool_field` will work across all three underlying databases (whereas `bool_field <> 0` or `bool_field = 'false'` will depend on the
+        underlying database syntax).
+        In SQL Server, implicit true/false does not work, you should use `WHERE bool_field=0` (false) and `WHERE bool_field=1` (true) as your tests.
 * `bytearray` - stored as bytes (and converted back on output)
 * `bytes`
-* `datetime.date` - date objects and ISO8601 format strings are detected on input and stored in an appropriate date field
-* `datetime.datetime` - datetime objects and ISO8601 format strings are detected on input and stored an appropriate datetime field, 
-       if you specify `dates_str_output` note that datetimes are output in Python ISO8601 format (with a 'T' separator not a space)
-* `datetime.time` - time objects and ISO8601 format strings are detected on input and stored in an appropriate time field, 
-       In SQL Server, note that any microseconds are stripped from the stored value
-* `dict` - stored as a JSON string (which means the keys will always be converted to strings when output)
+* `datetime.date` - date objects and ISO8601 format strings are accepted as input
+        If you specify `dates_str_output` dates  are output as ISO8601 strings
+* `datetime.datetime` - datetime objects and ISO8601 format strings are are accepted as input. 
+        If you specify `dates_str_output` datetimes are output in Python ISO8601 format (with a 'T' separator not a space)
+* `datetime.time` - time objects and ISO8601 format strings are accepted as input. 
+        (in SQL Server, note that any microseconds are stripped from the stored value).
+        If you specify `dates_str_output` times are output as ISO8601 strings
+* `dict` - stored as a JSON string (which means the keys will always be converted to strings when output), but normally
+        returned as a `dict`, unless you specify `json_str_output`.
 * `float`
 * `int`
-* `list` - stored as a JSON string (and converted back on output)
-* `set` - stored as a JSON list string (and converted back on output)
+* `list` - stored as a JSON string but converted back on output, unless you specify `json_str_output`.
+* `set` - stored as a JSON list string but converted back on output, unless you specify `json_str_output`.
 * `str`
-* `tuple` - stored as a JSON list string (and converted back on output)
+* `tuple` - stored as a JSON list string but converted back on output, unless you specify `json_str_output`.
 
 
 ### SQL convenience functions
