@@ -5,7 +5,7 @@ build-backend = "pdm.backend"
 [project]
 # See https://packaging.python.org/en/latest/specifications/pyproject-toml/#pyproject-toml-spec
 name = "dbtruck"
-version = "1.2.0"
+version = "1.3.0"
 requires-python = ">= 3.10"
 description = "A relaxed schema-less interface to data tables and stored metadata in databases that use the DB API 2.0 PEP-0249 standard"
 readme = "README.md"
