@@ -106,9 +106,9 @@ Store has default keyword arguments as follows:
     
 Note if you want to use PostgreSQL, MySQL or SQL Server as your underlying database (see `connect_details` above) run one of these commands first:
 
-    python -m pip install psycopg2
-    python -m pip install mysql-connector-python
-    python -m pip install mssql-python
+    python -m pip install 'psycopg2>=2.9.10'
+    python -m pip install 'mysql-connector-python>=9.2.0'
+    python -m pip install 'mssql-python>=0.13.0'
 
 ### Non-default tables
 It is not necessary to specify a table name if you only use one table. If not specified
