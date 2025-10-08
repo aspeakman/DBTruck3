@@ -282,10 +282,18 @@ class Store(object):
         else:
             self._execute_norows(sql % sqlsubs) 
          
+        deferred = {}
         for row in this_data:
-            self._check_and_add_columns(table_name, row) # update with any other columns 
+            ed = self._check_and_add_columns(table_name, row) # update with any other columns
+            deferred.update(ed)
+            
+        # SQL Server deferred exec adds any new column extended properties
+        for k, v in deferred.items():
+            #print(k, v)
+            self._execute_norows(v)
             
         self.commit(implicit = True)
+        
         self.tables() # stores fresh _tables list
                     
     def create(self, *args, **kwargs):
@@ -493,7 +501,8 @@ class Store(object):
                     self._execute_norows(sql % self.iquote(table_name)) 
             elif self.db_type == 'SQLSERVER' and 'rowid' not in columns:
                     sql = 'ALTER TABLE %s ADD rowid bigint identity(1,1);'
-                    self._execute_norows(sql % self.iquote(table_name)) 
+                    self._execute_norows(sql % self.iquote(table_name))
+        exec_deferred = {}
         for key, value in data_row:
             if key not in columns and value is not None:
                 column_type = self._obj_column_type(value)
@@ -502,6 +511,7 @@ class Store(object):
                     sql = 'ALTER TABLE %s ADD %s %s;'
                 else:
                     sql = 'ALTER TABLE %s ADD COLUMN %s %s;' 
+                #print(sql % sqlsubs)
                 self._execute_norows(sql % sqlsubs) 
             if self.db_type == 'POSTGRESQL': # use the Postgres comment field to remove/store any post extraction cast information
                 column_cast = self._obj_column_cast(value)
@@ -523,7 +533,8 @@ class Store(object):
                         @level0type = 'Schema', @level0name = 'dbo',
                         @level1type = 'Table', @level1name = %s, 
                         @level2type = 'Column', @level2name = %s;"""
-                    self._execute_norows(sql % sqlsubs)
+                    exec_deferred[key] = sql % sqlsubs
+        return exec_deferred
                 
     def execute(self, sql, *args, **kwargs): 
         """ note executes a raw SQL statement - so must be quoted where necessary 
