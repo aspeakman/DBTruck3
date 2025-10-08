@@ -791,6 +791,10 @@ if SQLSRV:
         (list, 'nvarchar(max)', 'json'),
         (tuple, 'nvarchar(max)', 'jsontuple'),
         (set, 'nvarchar(max)', 'jsonset'),
+        #(dict, 'json', None),
+        #(list, 'json', None),
+        #(tuple, 'json', 'jsontuple'),
+        #(set, 'json', 'jsonset'),
         
         # default - matches any picklable object
         (Pickle, 'varbinary(max)', 'pickle'),
@@ -826,7 +830,7 @@ if SQLSRV:
             else:
                 return super()._map_data_type(sql_type)
                 
-        def _map_sql_type(self, param, parameters_list, i): # Adapter function Python -> SQL
+        def _map_sql_type(self, param, parameters_list, i, min_val=None, max_val=None): # Adapter function Python -> SQL
             """
             Map a Python data type to the corresponding SQL type, 
             C type, Column size, and Decimal digits.
@@ -844,6 +848,7 @@ if SQLSRV:
                         ddbc_sql_const.SQL_C_WCHAR.value,
                         len(parameters_list[i]),
                         0,
+                        False,
                     )
             if isinstance(param, set):
                 parameters_list[i] = adapt_jsonset(param)
@@ -852,6 +857,7 @@ if SQLSRV:
                         ddbc_sql_const.SQL_C_WCHAR.value,
                         len(parameters_list[i]),
                         0,
+                        False,
                     )
             if isinstance(param, Pickle):
                 parameters_list[i] = param.adapted() # bytes
@@ -864,11 +870,12 @@ if SQLSRV:
                     ddbc_sql_const.SQL_C_TYPE_TIME.value,
                     15,
                     6,
+                    False,
                 )
             elif isinstance(param, Adapter): # dates, datetimes
                 parameters_list[i] = param.adapted() # isoformat string
                 param = param.adapted()
-            return super()._map_sql_type(param, parameters_list, i)
+            return super()._map_sql_type(param, parameters_list, i, min_val=min_val, max_val=max_val)
             
     
     SQLSERVER_CAST_MAP = { # custom  converters (SQL to Python object) - based on second cast column above, NOTE transforms take place AFTER data is extracted from database
